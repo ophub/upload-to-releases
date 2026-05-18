@@ -23,6 +23,7 @@
 # build_release_payload    : Assemble a JSON body for the releases create/update endpoint
 # create_release           : Create a new release via the API
 # update_release           : Update an existing release via the API
+# error_release_permission : Print HTTP 422 permission-error guidance and abort
 # ensure_release           : Guarantee the target release exists (create or update as needed)
 #
 # expand_artifacts         : Expand glob/comma patterns into a resolved, deduplicated file list
@@ -402,6 +403,17 @@ get_release() {
     fi
 }
 
+# error_release_permission <operation> <api_error>
+# Print a standardised permission-error message for HTTP 422 on release create/update,
+# then abort the script. Centralised here so the guidance text is maintained in one place.
+error_release_permission() {
+    local operation="${1}" api_error="${2}"
+    echo -e "${ERROR} ❌ Failed to [ ${operation} ] release (HTTP 422): ${api_error}"
+    echo -e "${NOTE} ⚠️ This is usually a permissions issue. Please enable write access for the GITHUB_TOKEN:"
+    echo -e "${NOTE} ✅ Repository → Settings → Actions → General → Workflow permissions → Select \"Read and write permissions\" → Save"
+    error_msg "Release ${operation} failed due to insufficient permissions (HTTP 422)."
+}
+
 # build_release_payload <tag_name> <name> <body> <draft_bool> <prerelease_bool> <make_latest>
 # Outputs a compact JSON payload suitable for the releases create/update API.
 # Uses jq --argjson for boolean fields to avoid string/bool type confusion.
@@ -456,6 +468,10 @@ create_release() {
         upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
         html_url="$(echo "${api_response}" | jq -r '.html_url')"
         echo -e "${SUCCESS} Release created: id=[ ${release_id} ], url=[ ${html_url} ]"
+    elif [[ "${api_http_code}" == "422" ]]; then
+        local api_error
+        api_error="$(echo "${api_response}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
+        error_release_permission "create" "${api_error}"
     else
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
@@ -490,6 +506,10 @@ update_release() {
         upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
         html_url="$(echo "${api_response}" | jq -r '.html_url')"
         echo -e "${SUCCESS} Release updated: id=[ ${release_id} ], url=[ ${html_url} ]"
+    elif [[ "${api_http_code}" == "422" ]]; then
+        local api_error
+        api_error="$(echo "${api_response}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
+        error_release_permission "update" "${api_error}"
     else
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
