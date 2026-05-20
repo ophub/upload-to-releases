@@ -895,7 +895,7 @@ upload_asset() {
                 local local_hash_check=""
                 local_hash_check="$(${SHA256_CMD} "${file_path}" 2>/dev/null | awk '{print $1}')"
                 if [[ -n "${local_hash_check}" && "${existing_digest}" == "sha256:${local_hash_check}" ]]; then
-                    echo -e "${SUCCESS} └─ (${file_index}/${total_files}) SHA-256 verified identical; skipping re-upload: [ ${file_name} ]"
+                    echo -e "${DONE} └─ (${file_index}/${total_files}) SHA-256 verified identical; skipping re-upload: [ ${file_name} ]"
                     echo ""
                     # Record as skipped (not a failure); caller counts return 2 as skipped
                     return 2
@@ -988,6 +988,7 @@ upload_all_assets() {
 
     local up_success=0 up_fail=0 up_skip=0
     local idx=0
+    local skipped_files=()
 
     # Loop through each resolved file and attempt upload; track successes, failures, and skips for the final summary
     for file_path in "${resolved_files[@]}"; do
@@ -999,24 +1000,37 @@ upload_all_assets() {
             up_success=$((up_success + 1))
         elif [[ "${upload_ret}" -eq 2 ]]; then
             up_skip=$((up_skip + 1))
-            echo -e "${NOTE} Skipped [ $(basename "${file_path}") ] — continuing with next file."
+            skipped_files+=("$(basename "${file_path}")")
         else
             up_fail=$((up_fail + 1))
-            echo -e "${NOTE} Failed  [ $(basename "${file_path}") ] — continuing with next file."
         fi
     done
 
     echo -e "${SUCCESS} Upload summary: [ ${total} ] total, [ ${up_success} ] succeeded, [ ${up_fail} ] failed, [ ${up_skip} ] skipped."
 
-    # List every file that has no entry in UPLOAD_RESULTS_FILE (i.e. was not uploaded)
-    if [[ "$((up_fail + up_skip))" -gt 0 ]]; then
-        echo -e "${NOTE} Files not successfully uploaded:"
+    # List failed files (not in UPLOAD_RESULTS_FILE and not in skipped_files)
+    if [[ "${up_fail}" -gt 0 ]]; then
+        echo -e "${NOTE} Files failed to upload:"
         for file_path in "${resolved_files[@]}"; do
             local fname
             fname="$(basename "${file_path}")"
+            # Skip files that were intentionally skipped
+            local is_skipped="false"
+            for sf in "${skipped_files[@]}"; do
+                [[ "${sf}" == "${fname}" ]] && is_skipped="true" && break
+            done
+            [[ "${is_skipped}" == "true" ]] && continue
             # Use -F (fixed string) so filenames with regex special chars (. + [ etc.) match literally
             grep -qF "${fname}=" "${UPLOAD_RESULTS_FILE}" 2>/dev/null ||
                 echo -e "${NOTE}   - ${fname}"
+        done
+    fi
+
+    # List skipped files separately
+    if [[ "${up_skip}" -gt 0 ]]; then
+        echo -e "${NOTE} Files skipped (SHA-256 identical or replaces_artifacts=false):"
+        for sf in "${skipped_files[@]}"; do
+            echo -e "${NOTE}   - ${sf}"
         done
     fi
 
