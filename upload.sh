@@ -883,7 +883,7 @@ upload_asset() {
                     echo ""
                     return 1
                 fi
-                echo -e "${INFO} │  (${file_index}/${total_files}) Asset [ ${file_name} ] already exists; checking SHA-256 before replacing (replace cycle ${replace_cycles}/${MAX_REPLACE_CYCLES}, error attempt ${attempt}/${UPLOAD_MAX_RETRY})..."
+                echo -e "${INFO} │  (${file_index}/${total_files}) Asset [ ${file_name} ] already exists; checking SHA-256 before replacing."
                 fetch_assets_list
                 local existing_id existing_digest
                 existing_id="$(jq -r --arg n "${file_name}" \
@@ -901,12 +901,14 @@ upload_asset() {
                     return 2
                 fi
 
+                # If we get here, the existing asset is different (or has no digest) — delete it and retry the upload.
                 if [[ -z "${existing_digest}" || "${existing_digest}" == "null" ]]; then
                     echo -e "${INFO} │  (${file_index}/${total_files}) No remote digest available for [ ${file_name} ]; replacing."
                 else
                     echo -e "${INFO} │  (${file_index}/${total_files}) SHA-256 mismatch for [ ${file_name} ]; replacing."
                 fi
 
+                # Just in case the 422 was caused by a stale asset from a previous attempt (state != "uploaded"), delete it before retrying.
                 if [[ -n "${existing_id}" ]]; then
                     delete_asset "${existing_id}" "${file_name}" "${file_index}" "${total_files}"
                 fi
