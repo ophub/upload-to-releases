@@ -30,7 +30,7 @@
 | `allow_updates` | 可选 | `true` | 当指定标签的 Release 已存在时，是否更新其元数据（名称、正文、标志位）。设为 `false` 则跳过已有 Release 的元数据更新。 |
 | `remove_artifacts` | 可选 | `false` | 上传前是否删除 Release 中的**所有**现有资产文件。优先级高于 `replaces_artifacts`。 |
 | `replaces_artifacts` | 可选 | `true` | 是否替换同名的已有资产文件。设为 `false` 时，上传同名文件时将会跳过，不进行替换。 |
-| `upload_timeout` | 可选 | `10` | 单个文件上传超时时间，单位为**分钟**。超时后自动放弃当前文件并继续上传下一个。设为 `0` 表示禁用单文件最大时限。注意：即使设为 `0`，防卡死的速度守卫仍然有效——若上传速度连续 60 秒低于 1 KB/s，仍会自动放弃该文件。 |
+| `upload_timeout` | 可选 | `5` | 单个文件上传超时时间，单位为**分钟**。超时后自动重试，最多重试 3 次，全部失败后跳过当前文件并继续上传下一个。设为 `0` 表示禁用单文件最大时限。注意：即使设为 `0`，防卡死的速度守卫仍然有效，若上传速度连续 60 秒低于 1 KB/s，仍会触发重试机制。 |
 | `make_latest` | 可选 | `true` | 是否将此 Release 标记为最新版本。可选值：`true` / `false` / `legacy`（由发布日期和语义化版本号决定）。 |
 | `prerelease` | 可选 | `false` | 是否将此 Release 标记为预发布版本。 |
 | `draft` | 可选 | `false` | 是否将此 Release 标记为草稿。 |
@@ -54,9 +54,6 @@
 - ✳️ 若指定的 `tag` 在仓库中尚不存在，GitHub 将在创建 Release 时自动以默认分支的当前提交为基础创建该 Tag。
 - ⚠️ 设置 `remove_artifacts: true` 会在上传前删除**所有**现有资产文件，请谨慎使用。
 - ♻️ 当 `replaces_artifacts` 为 `true` 且已存在同名文件时，系统会先通过 API 查询远端文件的 SHA-256 值，并与本地文件进行比对。若 SHA-256 相同，则跳过重新上传；若 SHA-256 不同或远端文件无 digest 信息，则删除旧资产并重新上传。
-- 同时提供 `body_file` 和 `body` 时，`body_file` 优先生效。
-- 若某个文件上传卡住（速度连续 60 秒低于 1 KB/s，或超过 `upload_timeout` 设定的时限），上传任务会自动放弃当前文件并继续处理队列中的下一个文件。
-- 将 `upload_timeout` 设为 `0` 仅禁用单文件最大时限，防卡死速度守卫仍然有效——上传速度连续 60 秒低于 1 KB/s 时仍会自动放弃。
 - 所有文件上传完成后，该 Action 会自动利用 API 提供的哈希值（`digest: sha256:<hex>`）对每个文件进行验证。
 
 ## 上传进度与日志
@@ -78,7 +75,7 @@
 
 [ STEPS ] Starting upload of [ 5 ] file(s) to release [ 123456 ]...
 [ FILE ] ┌─ (1/5) Uploading: [ firmware-arm64.img.gz ]
-[ SIZE ] │  (1/5) Size: 1.23 GiB  MIME: application/gzip  timeout=10min
+[ SIZE ] │  (1/5) Size: 1.23 GiB  MIME: application/gzip  timeout=5min
 [ DONE ] │  (1/5) Upload completed in 87s: [ firmware-arm64.img.gz ]
 [ DONE ] └─ (1/5) Download URL: [ https://github.com/owner/repo/releases/download/v1.0.0/firmware-arm64.img.gz ]
 

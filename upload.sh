@@ -41,24 +41,48 @@
 #==================================== Set environment variables =====================================
 #
 # Default parameter values
+# Target repository in <owner>/<repo> format; defaults to the repository running the workflow
 repo=""
+# Tag name of the release to create or update
 tag=""
+# File path(s) to upload; supports glob patterns and comma-separated values
 artifacts=""
+# Update release metadata if a release for the given tag already exists (true/false)
 allow_updates="true"
+# Remove all existing assets from the release before uploading new ones (true/false)
 remove_artifacts="false"
+# Replace an existing asset that has the same filename (true/false)
 replaces_artifacts="true"
+# Mark this release as the latest release (true/false/legacy)
 make_latest="true"
+# Mark this release as a pre-release (true/false)
 prerelease="false"
+# Mark this release as a draft (true/false)
 draft="false"
+# Display title of the release; falls back to the tag name when empty
 release_name=""
+# Markdown body text of the release
 body=""
+# Path to a Markdown file used as the release body; takes precedence over body
 body_file=""
+# Output detailed JSON logs for each step (true/false)
 out_log="false"
-
 # per-file upload timeout, minutes (0 = disables max-time only; stall guard still active)
-upload_timeout="10"
-# GitHub API pagination limit
-github_per_page="100"
+upload_timeout="5"
+
+# UPLOAD_MAX_TIME is derived from upload_timeout at runtime (seconds; 0 = unlimited)
+UPLOAD_MAX_TIME=$((upload_timeout * 60))
+# Abort an upload if speed stays below UPLOAD_SPEED_LIMIT bytes/s for UPLOAD_SPEED_TIME seconds
+UPLOAD_SPEED_LIMIT="1024"
+# Seconds at speed below UPLOAD_SPEED_LIMIT before curl aborts the transfer
+UPLOAD_SPEED_TIME="60"
+
+# Maximum upload attempts per file (initial try + retries)
+RETRY_MAX_ATTEMPTS="3"
+# Initial back-off between upload retries (seconds); doubled on each subsequent attempt
+RETRY_WAIT_INIT="30"
+# Seconds to wait after receiving HTTP 429 (rate-limited) before the next attempt
+RATE_LIMIT_WAIT="60"
 
 # curl connection / transfer timeout settings for regular API calls (not file uploads)
 CURL_CONNECT_TIMEOUT="30"
@@ -66,21 +90,8 @@ CURL_CONNECT_TIMEOUT="30"
 CURL_SPEED_LIMIT="1"
 # seconds below CURL_SPEED_LIMIT before the connection is aborted
 CURL_SPEED_TIME="60"
-
-# UPLOAD_MAX_TIME is derived from upload_timeout at runtime (seconds; 0 = unlimited)
-UPLOAD_MAX_TIME="600"
-# Abort an upload if speed stays below UPLOAD_SPEED_LIMIT bytes/s for UPLOAD_SPEED_TIME seconds
-UPLOAD_SPEED_LIMIT="1024"
-# Seconds at speed below UPLOAD_SPEED_LIMIT before curl aborts the transfer
-UPLOAD_SPEED_TIME="60"
-
-# Maximum upload attempts per file (initial try + retries)
-UPLOAD_MAX_RETRY="3"
-
-# Initial back-off between upload retries (seconds); doubled on each subsequent attempt
-RETRY_WAIT_INIT="30"
-# Seconds to wait after receiving HTTP 429 (rate-limited) before the next attempt
-RATE_LIMIT_WAIT="60"
+# GitHub API pagination limit
+GITHUB_PER_PAGE="100"
 
 # Output color labels
 STEPS="[\033[95m STEPS \033[0m]"
@@ -300,7 +311,7 @@ init_var() {
     allow_updates="${INPUT_ALLOW_UPDATES:-true}"
     remove_artifacts="${INPUT_REMOVE_ARTIFACTS:-false}"
     replaces_artifacts="${INPUT_REPLACES_ARTIFACTS:-true}"
-    upload_timeout="${INPUT_UPLOAD_TIMEOUT:-10}"
+    upload_timeout="${INPUT_UPLOAD_TIMEOUT:-5}"
     make_latest="${INPUT_MAKE_LATEST:-true}"
     prerelease="${INPUT_PRERELEASE:-false}"
     draft="${INPUT_DRAFT:-false}"
@@ -632,7 +643,7 @@ fetch_assets_list() {
     local page=1
     while true; do
         api_call GET \
-            "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=${github_per_page}&page=${page}"
+            "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=${GITHUB_PER_PAGE}&page=${page}"
 
         if [[ "${api_http_code}" != "200" ]]; then
             local api_error
@@ -650,7 +661,7 @@ fetch_assets_list() {
             >>"${ASSETS_LIST_FILE}"
 
         # Stop paging when the last page returns fewer items than the page size
-        [[ "${count}" -lt "${github_per_page}" ]] && break
+        [[ "${count}" -lt "${GITHUB_PER_PAGE}" ]] && break
         page=$((page + 1))
     done
 
@@ -659,7 +670,7 @@ fetch_assets_list() {
 }
 
 # delete_asset <asset_id> <asset_name> [file_index] [total_files]
-# Sends a DELETE request for the given asset; up to UPLOAD_MAX_RETRY attempts total.
+# Sends a DELETE request for the given asset; up to RETRY_MAX_ATTEMPTS attempts total.
 # Returns 0 on success (or 404 = already gone), 1 on permanent failure.
 # Optional 3rd/4th args: file_index and total_files — when provided, prefix log lines with (n/N).
 delete_asset() {
@@ -672,7 +683,7 @@ delete_asset() {
 
     # Loop through each attempt: on 200/204 return success, on 404 treat as already deleted,
     # on 429 wait and retry, on other errors apply exponential back-off and retry
-    while [[ "${attempt}" -lt "${UPLOAD_MAX_RETRY}" ]]; do
+    while [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; do
         attempt=$((attempt + 1))
 
         api_call DELETE \
@@ -686,16 +697,16 @@ delete_asset() {
             echo -e "${NOTE} │  ${idx_prefix} Asset [ ${asset_name} ] not found (already deleted), skipping."
             return 0
         elif [[ "${api_http_code}" == "429" ]]; then
-            echo -e "${NOTE} │  ${idx_prefix} Rate limited while deleting [ ${asset_name} ], waiting ${RATE_LIMIT_WAIT}s... (attempt ${attempt}/${UPLOAD_MAX_RETRY})"
+            echo -e "${NOTE} │  ${idx_prefix} Rate limited while deleting [ ${asset_name} ], waiting ${RATE_LIMIT_WAIT}s... (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
             sleep "${RATE_LIMIT_WAIT}"
         else
-            echo -e "${NOTE} │  ${idx_prefix} Failed to delete [ ${asset_name} ] (HTTP ${api_http_code}), attempt ${attempt}/${UPLOAD_MAX_RETRY}"
+            echo -e "${NOTE} │  ${idx_prefix} Failed to delete [ ${asset_name} ] (HTTP ${api_http_code}), attempt ${attempt}/${RETRY_MAX_ATTEMPTS}"
             # Apply exponential back-off before the next attempt
-            [[ "${attempt}" -lt "${UPLOAD_MAX_RETRY}" ]] && sleep "${wait_time}" && wait_time=$((wait_time * 2))
+            [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]] && sleep "${wait_time}" && wait_time=$((wait_time * 2))
         fi
     done
 
-    echo -e "${ERROR} Could not delete asset [ ${asset_name} ] after ${UPLOAD_MAX_RETRY} attempts."
+    echo -e "${ERROR} Could not delete asset [ ${asset_name} ] after ${RETRY_MAX_ATTEMPTS} attempts."
     return 1
 }
 
@@ -780,16 +791,16 @@ upload_asset() {
     local is_replace=false
 
     # Loop until upload succeeds or we exhaust retry attempts
-    while [[ "${attempt}" -lt "${UPLOAD_MAX_RETRY}" ]]; do
+    while [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; do
         attempt=$((attempt + 1))
 
         # Distinguish a post-replace re-upload from a genuine error retry
         if [[ "${attempt}" -gt 1 || "${is_replace}" == "true" ]]; then
             if [[ "${is_replace}" == "true" ]]; then
-                echo -e "${NOTE} │  (${file_index}/${total_files}) Re-uploading after replace (replace cycle ${replace_cycles}/${MAX_REPLACE_CYCLES}, error attempt ${attempt}/${UPLOAD_MAX_RETRY})..."
+                echo -e "${NOTE} │  (${file_index}/${total_files}) Re-uploading after replace (replace cycle ${replace_cycles}/${MAX_REPLACE_CYCLES}, error attempt ${attempt}/${RETRY_MAX_ATTEMPTS})..."
                 is_replace=false
             else
-                echo -e "${NOTE} │  (${file_index}/${total_files}) Retry attempt ${attempt}/${UPLOAD_MAX_RETRY}..."
+                echo -e "${NOTE} │  (${file_index}/${total_files}) Retry attempt ${attempt}/${RETRY_MAX_ATTEMPTS}..."
             fi
         fi
 
@@ -845,8 +856,8 @@ upload_asset() {
                 fi
             fi
 
-            echo -e "${NOTE} │  (${file_index}/${total_files}) curl error ${curl_exit} (${curl_reason}) after ${elapsed}s (attempt ${attempt}/${UPLOAD_MAX_RETRY})"
-            if [[ "${attempt}" -lt "${UPLOAD_MAX_RETRY}" ]]; then
+            echo -e "${NOTE} │  (${file_index}/${total_files}) curl error ${curl_exit} (${curl_reason}) after ${elapsed}s (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
+            if [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; then
                 # remove any stale partial asset before retry
                 cleanup_partial_upload "${file_name}" "${file_index}" "${total_files}"
                 echo -e "${NOTE} │  (${file_index}/${total_files}) Retrying in ${wait_time}s..."
@@ -857,7 +868,7 @@ upload_asset() {
             # Print the captured curl stderr on the final attempt to expose the root cause
             [[ -n "${curl_stderr_msg}" ]] &&
                 echo -e "${WARN} │  (${file_index}/${total_files}) curl stderr: ${curl_stderr_msg}"
-            echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${file_name} ] (${curl_reason} after ${UPLOAD_MAX_RETRY} attempts). Skipping."
+            echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${file_name} ] (${curl_reason} after ${RETRY_MAX_ATTEMPTS} attempts). Skipping."
             echo ""
             return 1
         fi
@@ -933,9 +944,9 @@ upload_asset() {
 
         # ── HTTP 429: server-side rate limit on the upload endpoint ──────
         # attempt is already incremented at the top of the loop, so this still counts
-        # toward UPLOAD_MAX_RETRY — prevents an infinite loop if throttling persists.
+        # toward RETRY_MAX_ATTEMPTS — prevents an infinite loop if throttling persists.
         if [[ "${http_code}" == "429" ]]; then
-            echo -e "${NOTE} │  (${file_index}/${total_files}) Rate limited, waiting ${RATE_LIMIT_WAIT}s... (attempt ${attempt}/${UPLOAD_MAX_RETRY})"
+            echo -e "${NOTE} │  (${file_index}/${total_files}) Rate limited, waiting ${RATE_LIMIT_WAIT}s... (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
             sleep "${RATE_LIMIT_WAIT}"
             continue
         fi
@@ -943,10 +954,10 @@ upload_asset() {
         # ── All other HTTP errors (5xx, etc.) — back-off and retry ───────
         local api_error
         api_error="$(echo "${response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
-        echo -e "${NOTE} │  (${file_index}/${total_files}) HTTP ${http_code}: ${api_error} (attempt ${attempt}/${UPLOAD_MAX_RETRY})"
+        echo -e "${NOTE} │  (${file_index}/${total_files}) HTTP ${http_code}: ${api_error} (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
 
         # Apply exponential back-off before the next attempt, but only if we have attempts left
-        if [[ "${attempt}" -lt "${UPLOAD_MAX_RETRY}" ]]; then
+        if [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; then
             cleanup_partial_upload "${file_name}" "${file_index}" "${total_files}"
             echo -e "${NOTE} │  (${file_index}/${total_files}) Retrying in ${wait_time}s..."
             sleep "${wait_time}"
@@ -954,7 +965,7 @@ upload_asset() {
         fi
     done
 
-    echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${file_name} ] failed after ${UPLOAD_MAX_RETRY} attempts. Skipping."
+    echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${file_name} ] failed after ${RETRY_MAX_ATTEMPTS} attempts. Skipping."
     echo ""
     return 1
 }

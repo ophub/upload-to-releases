@@ -28,7 +28,7 @@ Reference this Action in a `.github/workflows/*.yml` workflow file, for example 
 | `allow_updates` | Optional | `true` | Update the release metadata (name, body, flags) if a release for the given tag already exists. Set to `false` to skip metadata updates on existing releases. |
 | `remove_artifacts` | Optional | `false` | Remove **all** existing assets from the release before uploading new ones. Takes priority over `replaces_artifacts`. |
 | `replaces_artifacts` | Optional | `true` | Replace an existing asset that has the same filename. When `false`, uploading a duplicate filename will be skipped. |
-| `upload_timeout` | Optional | `10` | Per-file upload timeout in **minutes**. If a single file upload exceeds this limit it is abandoned and the next file is attempted immediately. Set to `0` to disable the per-file max-time limit. Note: even when `upload_timeout=0`, the stall guard remains active — uploads that transfer less than 1 KB/s for 60 consecutive seconds are still automatically abandoned. |
+| `upload_timeout` | Optional | `5` | Per-file upload timeout in **minutes**. If a single file upload exceeds this limit, it is automatically retried up to 3 times total; if all attempts fail the file is skipped and the next file is attempted. Set to `0` to disable the per-file max-time limit. Note: even when `upload_timeout=0`, the stall guard remains active, uploads that transfer less than 1 KB/s for 60 consecutive seconds will still trigger the retry mechanism. |
 | `make_latest` | Optional | `true` | Mark this release as the latest release. Options: `true` / `false` / `legacy` (determined by date and semantic version). |
 | `prerelease` | Optional | `false` | Mark this release as a pre-release. |
 | `draft` | Optional | `false` | Mark this release as a draft. |
@@ -52,9 +52,6 @@ Reference this Action in a `.github/workflows/*.yml` workflow file, for example 
 - ✳️ If the specified `tag` does not yet exist in the repository, GitHub will automatically create it pointing to the default branch at the time of the release creation.
 - ⚠️ Setting `remove_artifacts: true` deletes **all** existing assets before uploading; use with care.
 - ♻️ When `replaces_artifacts` is `true` and a file with the same name already exists, the remote SHA-256 is compared against the local file first. If they match, the upload is skipped (no re-upload needed). If they differ — or if the remote asset has no digest — the old asset is deleted and re-uploaded.
-- `body_file` takes precedence over `body` when both are provided.
-- If a single file upload is stuck (speed below 1 KB/s for 60 s, or the per-file timeout is reached), the upload is automatically abandoned and the script moves on to the next file in the queue.
-- Setting `upload_timeout=0` disables only the per-file max-time limit. The stall guard (abort when speed < 1 KB/s for 60 s) stays active regardless.
 - After all uploads complete, the action automatically verifies each file using the API-provided hash (`digest: sha256:<hex>`).
 
 ## Upload progress and logging
@@ -76,7 +73,7 @@ This action prints detailed real-time progress for every file:
 
 [ STEPS ] Starting upload of [ 5 ] file(s) to release [ 123456 ]...
 [ FILE ] ┌─ (1/5) Uploading: [ firmware-arm64.img.gz ]
-[ SIZE ] │  (1/5) Size: 1.23 GiB  MIME: application/gzip  timeout=10min
+[ SIZE ] │  (1/5) Size: 1.23 GiB  MIME: application/gzip  timeout=5min
 [ DONE ] │  (1/5) Upload completed in 87s: [ firmware-arm64.img.gz ]
 [ DONE ] └─ (1/5) Download URL: [ https://github.com/owner/repo/releases/download/v1.0.0/firmware-arm64.img.gz ]
 

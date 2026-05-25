@@ -1,6 +1,6 @@
 name: "upload-to-releases"
 author: "ophub"
-description: "Upload files from a specified directory to GitHub Releases"
+description: "Upload files to GitHub Releases using the GitHub REST API"
 inputs:
   repo:
     description: "Repo name in the form of <owner>/<repo>"
@@ -27,9 +27,9 @@ inputs:
     required: false
     default: "true"
   upload_timeout:
-    description: "Per-file upload timeout in minutes (default: 10)"
+    description: "Per-file upload timeout in minutes (default: 5)"
     required: false
-    default: "10"
+    default: "5"
   make_latest:
     description: "Mark this release as the latest release (true/false/legacy)"
     required: false
