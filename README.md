@@ -21,21 +21,21 @@ Reference this Action in a `.github/workflows/*.yml` workflow file, for example 
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `tag` | **Required** | — | Tag name of the release to create or update (e.g. `v1.0.0`). |
+| `tag` | **Required** | — | Tag name of the release to create or update (e.g. `v1.0.0`). If the specified `tag` does not yet exist in the repository, it will automatically create it pointing to the default branch at the time of the release creation. |
 | `artifacts` | **Required** | — | File path(s) to upload. Supports glob patterns and comma-separated values (e.g. `dist/*.zip` or `dist/*.zip,out/*.tar.gz`). |
 | `gh_token` | **Required** | — | The [GITHUB_TOKEN](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token) used for API authentication is a built-in token that GitHub automatically provides for each workflow run, so you don't need to create it manually. |
 | `repo` | Optional | Current repository | Target repository in `<owner>/<repo>` format. Defaults to the repository running the workflow. |
-| `allow_updates` | Optional | `true` | Update the release metadata (name, body, flags) if a release for the given tag already exists. Set to `false` to skip metadata updates on existing releases. |
-| `remove_artifacts` | Optional | `false` | Remove **all** existing assets from the release before uploading new ones. Takes priority over `replaces_artifacts`. |
-| `replaces_artifacts` | Optional | `true` | Replace an existing asset that has the same filename. When `false`, uploading a duplicate filename will be skipped. |
+| `allow_updates` | Optional | `true` | Update the release metadata (name, body, flags) if a release for the given tag already exists. Set to `false` to skip metadata updates on existing releases. Options: `true` / `false` |
+| `remove_artifacts` | Optional | `false` | Remove **all** existing assets from the release before uploading new ones. Takes priority over `replaces_artifacts`. Use with caution. Options: `true` / `false` |
+| `replaces_artifacts` | Optional | `true` | Replace an existing asset that has the same filename. When `false`, uploading a duplicate filename will be skipped. When is `true` and a file with the same name already exists, the remote SHA-256 is compared against the local file first. If they match, the upload is skipped (no re-upload needed). If they differ, or if the remote asset has no digest, the old asset is deleted and re-uploaded. Options: `true` / `false` |
 | `upload_timeout` | Optional | `5` | Per-file upload timeout in **minutes**. If a single file upload exceeds this limit, it is automatically retried up to 3 times total; if all attempts fail the file is skipped and the next file is attempted. Set to `0` to disable the per-file max-time limit. Note: even when `upload_timeout=0`, the stall guard remains active, uploads that transfer less than 1 KB/s for 60 consecutive seconds will still trigger the retry mechanism. |
 | `make_latest` | Optional | `true` | Mark this release as the latest release. Options: `true` / `false` / `legacy` (determined by date and semantic version). |
-| `prerelease` | Optional | `false` | Mark this release as a pre-release. |
-| `draft` | Optional | `false` | Mark this release as a draft. |
+| `prerelease` | Optional | `false` | Mark this release as a pre-release. Options: `true` / `false` |
+| `draft` | Optional | `false` | Mark this release as a draft. Options: `true` / `false` |
 | `name` | Optional | `""` | Display title name of the release. Falls back to the tag name when omitted. |
 | `body` | Optional | `""` | Markdown body text of the release. Overridden by `body_file` when both are set. |
 | `body_file` | Optional | `""` | Path to a Markdown file whose content is used as the release body. Takes precedence over `body`. |
-| `out_log` | Optional | `false` | Output detailed JSON logs for each step. Useful for debugging. |
+| `out_log` | Optional | `false` | Output detailed JSON logs for each step. Useful for debugging. Options: `true` / `false` |
 
 ## Outputs(optional)
 
@@ -49,10 +49,7 @@ Reference this Action in a `.github/workflows/*.yml` workflow file, for example 
 ## Notes
 
 - ✅ To upload files to a Release, you need to go to your repository's `Settings` > `Actions` > `General` > `Workflow permissions`, select `Read and write permissions`, and click the `Save` button. Alternatively, you can add the permissions configuration to your workflow file (.yml); the required [permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions) for uploading Release assets is `contents: write`.
-- ✳️ If the specified `tag` does not yet exist in the repository, GitHub will automatically create it pointing to the default branch at the time of the release creation.
-- ⚠️ Setting `remove_artifacts: true` deletes **all** existing assets before uploading; use with care.
-- ♻️ When `replaces_artifacts` is `true` and a file with the same name already exists, the remote SHA-256 is compared against the local file first. If they match, the upload is skipped (no re-upload needed). If they differ — or if the remote asset has no digest — the old asset is deleted and re-uploaded.
-- After all uploads complete, the action automatically verifies each file using the API-provided hash (`digest: sha256:<hex>`).
+- ♻️ After all uploads complete, the action automatically verifies each file using the API-provided hash (`digest: sha256:<hex>`).
 
 ## Upload progress and logging
 
