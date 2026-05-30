@@ -797,7 +797,7 @@ upload_asset() {
         # Distinguish a post-replace re-upload from a genuine error retry
         if [[ "${attempt}" -gt 1 || "${is_replace}" == "true" ]]; then
             if [[ "${is_replace}" == "true" ]]; then
-                echo -e "${NOTE} │  (${file_index}/${total_files}) Re-uploading after replace (replace cycle ${replace_cycles}/${MAX_REPLACE_CYCLES}, error attempt ${attempt}/${RETRY_MAX_ATTEMPTS})..."
+                echo -e "${NOTE} │  (${file_index}/${total_files}) Re-uploading after replace..."
                 is_replace=false
             else
                 echo -e "${NOTE} │  (${file_index}/${total_files}) Retry attempt ${attempt}/${RETRY_MAX_ATTEMPTS}..."
@@ -878,7 +878,7 @@ upload_asset() {
             local download_url
             download_url="$(echo "${response}" | jq -r '.browser_download_url')"
             echo -e "${DONE} │  (${file_index}/${total_files}) Upload completed in ${elapsed}s: [ ${file_name} ]"
-            echo -e "${DONE} └─ (${file_index}/${total_files}) Download URL: [ ${download_url} ]"
+            echo -e "${INFO} └─ (${file_index}/${total_files}) Download URL: [ ${download_url} ]"
             echo ""
 
             # Record result for verify_uploads and set_action_outputs to consume
@@ -910,7 +910,7 @@ upload_asset() {
                 local_hash_check="$(${SHA256_CMD} "${file_path}" 2>/dev/null | awk '{print $1}')"
                 if [[ -n "${local_hash_check}" && "${existing_digest}" == "sha256:${local_hash_check}" ]]; then
                     echo -e "${DONE} │  (${file_index}/${total_files}) SHA-256 verified identical; skipping re-upload: [ ${file_name} ]"
-                    echo -e "${DONE} └─ (${file_index}/${total_files}) Download URL: [ ${existing_download_url} ]"
+                    echo -e "${INFO} └─ (${file_index}/${total_files}) Download URL: [ ${existing_download_url} ]"
                     echo ""
                     # Record as skipped (not a failure); caller counts return 2 as skipped
                     return 2
