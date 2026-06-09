@@ -21,8 +21,8 @@
 
 可在工作流文件中配置以下选项：
 
-| 选项 | 是否必填 | 默认值 | 说明 |
-|------|----------|--------|------|
+| 选&nbsp;&nbsp;项 | 要&nbsp;&nbsp;求 | 默&nbsp;&nbsp;&nbsp;认&nbsp;&nbsp;&nbsp;值 | 说&nbsp;&nbsp;明 |
+|-------|-------|-------|-------|
 | `tag` | **必填** | — | 要创建或更新的 Release 标签名称（如 `v1.0.0`）。若指定的 `tag` 在仓库中尚不存在，将在创建 Release 时自动以默认分支的当前提交为基础创建该 Tag。 |
 | `artifacts` | **必填** | — | 要上传的文件路径，支持 glob 通配符和逗号分隔的多路径（如 `dist/*.zip` 或 `dist/*.zip,out/*.tar.gz`）。 |
 | `gh_token` | **必填** | — | 用于 API 认证的 [GITHUB_TOKEN](https://docs.github.com/zh/actions/tutorials/authenticate-with-github_token) 是 GitHub 自动为每个工作流运行提供的内置令牌，无需手动创建。 |
