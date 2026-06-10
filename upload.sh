@@ -1067,8 +1067,8 @@ upload_all_assets() {
 
     echo -e ""
 
-    # Abort with a non-zero exit if every single file failed or was skipped — a fully empty release is an error
-    [[ "${up_success}" -eq 0 ]] && error_msg "All [ ${total} ] file(s) failed or were skipped. Aborting."
+    # Abort with a non-zero exit only if every single file actually failed (skipped = SHA-256 identical = success)
+    [[ "${up_success}" -eq 0 && "${up_skip}" -eq 0 ]] && error_msg "All [ ${total} ] file(s) failed to upload. Aborting."
 }
 
 # For each successfully uploaded file, computes the local SHA-256 checksum and
