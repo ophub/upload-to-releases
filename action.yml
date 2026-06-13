@@ -116,15 +116,23 @@ runs:
         validate_boolean() {
             local var="${1}" param_name="${2}"
             if [[ ! "${var}" =~ ^(true|false)$ ]]; then
-                error_msg "Invalid value for ${param_name}: '${var}' must be 'true' or 'false'"
+                error_msg "Invalid value for ${param_name}: '${var}' must be 'true' or 'false'."
             fi
         }
         #
         # Validate make_latest parameter
-        validate_make_latest() {
+        validate_latest() {
             local var="${1}" param_name="${2}"
             if [[ ! "${var}" =~ ^(true|false|legacy)$ ]]; then
-                error_msg "Invalid value for ${param_name}: '${var}' must be 'true', 'false', or 'legacy'"
+                error_msg "Invalid value for ${param_name}: '${var}' must be 'true', 'false', or 'legacy'."
+            fi
+        }
+        #
+        # Validate upload_timeout parameter (must be a non-negative integer)
+        validate_timeout() {
+            local var="${1}"
+            if [[ ! "${var}" =~ ^[0-9]+$ ]]; then
+                error_msg "Invalid value for upload_timeout: '${var}' — must be a non-negative integer (minutes)."
             fi
         }
         #
@@ -140,13 +148,14 @@ runs:
         [[ -z "${INPUT_ARTIFACTS}" ]] && error_msg "The 'artifacts' input is required."
         #
         # Validate optional boolean / enum inputs
-        [[ -n "${INPUT_ALLOW_UPDATES}" ]]       && validate_boolean      "${INPUT_ALLOW_UPDATES}"       "allow_updates"
-        [[ -n "${INPUT_REMOVE_ARTIFACTS}" ]]    && validate_boolean      "${INPUT_REMOVE_ARTIFACTS}"    "remove_artifacts"
-        [[ -n "${INPUT_REPLACES_ARTIFACTS}" ]]  && validate_boolean      "${INPUT_REPLACES_ARTIFACTS}"  "replaces_artifacts"
-        [[ -n "${INPUT_MAKE_LATEST}" ]]         && validate_make_latest  "${INPUT_MAKE_LATEST}"         "make_latest"
-        [[ -n "${INPUT_PRERELEASE}" ]]          && validate_boolean      "${INPUT_PRERELEASE}"          "prerelease"
-        [[ -n "${INPUT_DRAFT}" ]]               && validate_boolean      "${INPUT_DRAFT}"               "draft"
-        [[ -n "${INPUT_OUT_LOG}" ]]             && validate_boolean      "${INPUT_OUT_LOG}"             "out_log"
+        [[ -n "${INPUT_ALLOW_UPDATES}" ]]       && validate_boolean  "${INPUT_ALLOW_UPDATES}"       "allow_updates"
+        [[ -n "${INPUT_REMOVE_ARTIFACTS}" ]]    && validate_boolean  "${INPUT_REMOVE_ARTIFACTS}"    "remove_artifacts"
+        [[ -n "${INPUT_REPLACES_ARTIFACTS}" ]]  && validate_boolean  "${INPUT_REPLACES_ARTIFACTS}"  "replaces_artifacts"
+        [[ -n "${INPUT_MAKE_LATEST}" ]]         && validate_latest   "${INPUT_MAKE_LATEST}"         "make_latest"
+        [[ -n "${INPUT_PRERELEASE}" ]]          && validate_boolean  "${INPUT_PRERELEASE}"          "prerelease"
+        [[ -n "${INPUT_DRAFT}" ]]               && validate_boolean  "${INPUT_DRAFT}"               "draft"
+        [[ -n "${INPUT_OUT_LOG}" ]]             && validate_boolean  "${INPUT_OUT_LOG}"             "out_log"
+        [[ -n "${INPUT_UPLOAD_TIMEOUT}" ]]      && validate_timeout  "${INPUT_UPLOAD_TIMEOUT}"
         #
         #===================================== Invoke the upload script ========================================
         #
