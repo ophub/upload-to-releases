@@ -408,6 +408,10 @@ get_release() {
     elif [[ "${api_http_code}" == "404" ]]; then
         # 404 is the normal "not found" response — not an error
         echo -e "${INFO} No existing release found for tag [ ${tag} ]."
+    elif [[ "${api_http_code}" == "403" ]]; then
+        local api_error
+        api_error="$(echo "${api_response}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
+        error_release_permission "query" "${api_http_code}" "${api_error}"
     else
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
@@ -415,15 +419,16 @@ get_release() {
     fi
 }
 
-# error_release_permission <operation> <api_error>
-# Print a standardised permission-error message for HTTP 422 on release create/update,
+# error_release_permission <operation> <http_code> <api_error>
+# Print a standardised permission-error message for HTTP 403/422 on release create/update,
 # then abort the script. Centralised here so the guidance text is maintained in one place.
 error_release_permission() {
-    local operation="${1}" api_error="${2}"
-    echo -e "${ERROR} ❌ Failed to [ ${operation} ] release (HTTP 422): ${api_error}"
+    local operation="${1}" http_code="${2}" api_error="${3}"
+    echo -e "${ERROR} ❌ Failed to [ ${operation} ] release (HTTP ${http_code}): ${api_error}"
     echo -e "${NOTE} ⚠️ This is usually a permissions issue. Please enable write access for the GITHUB_TOKEN:"
     echo -e "${NOTE} ✅ Repository → Settings → Actions → General → Workflow permissions → Select \"Read and write permissions\" → Save"
-    error_msg "Release ${operation} failed due to insufficient permissions (HTTP 422)."
+    echo -e "${NOTE} ✅ Or add [ permissions: contents: write ] to your workflow YAML."
+    error_msg "Release ${operation} failed due to insufficient permissions (HTTP ${http_code})."
 }
 
 # build_release_payload <tag_name> <name> <body> <draft_bool> <prerelease_bool> <make_latest>
@@ -480,10 +485,14 @@ create_release() {
         upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
         html_url="$(echo "${api_response}" | jq -r '.html_url')"
         echo -e "${SUCCESS} Release created: id=[ ${release_id} ], url=[ ${html_url} ]"
+    elif [[ "${api_http_code}" == "403" ]]; then
+        local api_error
+        api_error="$(echo "${api_response}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
+        error_release_permission "create" "${api_http_code}" "${api_error}"
     elif [[ "${api_http_code}" == "422" ]]; then
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
-        error_release_permission "create" "${api_error}"
+        error_release_permission "create" "${api_http_code}" "${api_error}"
     else
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
@@ -518,10 +527,14 @@ update_release() {
         upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
         html_url="$(echo "${api_response}" | jq -r '.html_url')"
         echo -e "${SUCCESS} Release updated: id=[ ${release_id} ], url=[ ${html_url} ]"
+    elif [[ "${api_http_code}" == "403" ]]; then
+        local api_error
+        api_error="$(echo "${api_response}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
+        error_release_permission "update" "${api_http_code}" "${api_error}"
     elif [[ "${api_http_code}" == "422" ]]; then
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
-        error_release_permission "update" "${api_error}"
+        error_release_permission "update" "${api_http_code}" "${api_error}"
     else
         local api_error
         api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
