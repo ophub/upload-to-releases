@@ -48,7 +48,17 @@ Reference this Action in a `.github/workflows/*.yml` workflow file, for example 
 
 ## Notes
 
-- ✅ To upload files to a Release, you need to go to your repository's `Settings` > `Actions` > `General` > `Workflow permissions`, select `Read and write permissions`, and click the `Save` button. Alternatively, you can add the permissions configuration to your workflow file (.yml); the required [permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions) for uploading Release assets is `contents: write`.
+- ✅ To upload files to a Release, the `GITHUB_TOKEN` needs write access to repository contents. You can grant this in either of two ways:
+  - **Recommended — add a [`permissions`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions) block to your workflow job:**
+
+    ```yaml
+    jobs:
+      build:
+        permissions:
+          contents: write
+    ```
+
+  - **Or** go to your repository's `Settings` > `Actions` > `General` > `Workflow permissions`, select `Read and write permissions`, and click `Save`. Note: the YAML approach takes precedence over the repository setting and follows the principle of least privilege.
 - ♻️ After all uploads complete, the action automatically verifies each file using the API-provided hash (`digest: sha256:<hex>`).
 
 ## Upload progress and logging

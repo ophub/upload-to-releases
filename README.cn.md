@@ -50,7 +50,17 @@
 
 ## 注意事项
 
-- ✅ 为了能够上传文件到 Release，你需要在你的仓库的 `Settings` > `Actions` > `General` > `Workflow permissions`，选择 `Read and write permissions`，然后点击 `Save` 按钮保存更改。或者在工作流文件（.yml）中添加 [permissions](https://docs.github.com/zh/actions/reference/workflows-and-actions/workflow-syntax#permissions) 配置，上传 Release 资源对应的权限是 `contents: write`。
+- ✅ 上传文件到 Release 需要 `GITHUB_TOKEN` 具备仓库内容的写入权限，有以下两种授权方式：
+  - **推荐 — 在工作流 job 中添加 [`permissions`](https://docs.github.com/zh/actions/reference/workflows-and-actions/workflow-syntax#permissions) 配置：**
+
+    ```yaml
+    jobs:
+      build:
+        permissions:
+          contents: write
+    ```
+
+  - **或者** 进入仓库的 `Settings` > `Actions` > `General` > `Workflow permissions`，选择 `Read and write permissions`，然后点击 `Save` 保存。注意：YAML 配置方式优先级更高，且遵循最小权限原则，推荐优先使用。
 - ♻️ 所有文件上传完成后，该 Action 会自动利用 API 提供的哈希值（`digest: sha256:<hex>`）对每个文件进行验证。
 
 ## 上传进度与日志
