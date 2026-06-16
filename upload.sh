@@ -121,16 +121,8 @@ cleanup() {
 
 # url_encode <string>
 # Percent-encode a string so it is safe to embed in a URL query parameter.
-# Tries python3 first; falls back to a pure bash implementation.
 url_encode() {
     local raw="${1}"
-
-    # python3 urllib.parse.quote is the fastest and most correct encoder available
-    if command -v python3 >/dev/null 2>&1; then
-        python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "${raw}" 2>/dev/null && return
-    fi
-
-    # Pure-bash fallback: walk the string byte-by-byte and encode non-unreserved chars
     local encoded="" i char hex
     for ((i = 0; i < ${#raw}; i++)); do
         char="${raw:i:1}"
@@ -154,11 +146,11 @@ format_size() {
 
     # Choose the largest unit where the value is >= 1 to keep the number readable
     if [[ "${bytes}" -ge 1073741824 ]]; then
-        printf "%.2f GiB" "$(echo "scale=2; ${bytes}/1073741824" | bc)"
+        awk "BEGIN{printf \"%.2f GiB\", ${bytes}/1073741824}"
     elif [[ "${bytes}" -ge 1048576 ]]; then
-        printf "%.2f MiB" "$(echo "scale=2; ${bytes}/1048576" | bc)"
+        awk "BEGIN{printf \"%.2f MiB\", ${bytes}/1048576}"
     elif [[ "${bytes}" -ge 1024 ]]; then
-        printf "%.2f KiB" "$(echo "scale=2; ${bytes}/1024" | bc)"
+        awk "BEGIN{printf \"%.2f KiB\", ${bytes}/1024}"
     else
         printf "%d B" "${bytes}"
     fi
@@ -262,11 +254,11 @@ install_dependencies() {
     echo -e "${STEPS} Installing missing dependencies..."
 
     # ── Dependency check ──────────────────────────────────────────────────
-    # Required tools: jq (JSON), curl (HTTP), bc (arithmetic), sha256sum / shasum
+    # Required tools: jq (JSON), curl (HTTP), sha256sum / shasum
     # (integrity verification), file (MIME detection).
     # All are pre-installed on GitHub-hosted ubuntu-* runners; the block below
     # is a safety net for self-hosted runners or minimal container images.
-    local dependency_packages=("jq" "curl" "bc" "file")
+    local dependency_packages=("jq" "curl" "file")
     local missing_pkgs=()
 
     # Check if each required command is available; if not, add its package to the missing_pkgs list
@@ -573,8 +565,8 @@ expand_artifacts() {
 
     # final list of absolute / relative file paths to upload
     resolved_files=()
-    # tracks already-added paths for deduplication
-    local seen_files=()
+    # tracks already-added paths for O(1) deduplication using associative array
+    declare -A seen_files
 
     # Split the comma-separated artifact string into individual pattern entries
     IFS=',' read -r -a artifact_entries <<<"${artifacts}"
@@ -603,17 +595,13 @@ expand_artifacts() {
                 continue
             fi
 
-            # Deduplicate: skip this path if it was already added by an earlier pattern
-            local dup="false"
-            for seen in "${seen_files[@]}"; do
-                [[ "${seen}" == "${f}" ]] && dup="true" && break
-            done
-            if [[ "${dup}" == "true" ]]; then
+            # Deduplicate: skip this path if it was already added by an earlier pattern (O(1) lookup)
+            if [[ -n "${seen_files[${f}]+x}" ]]; then
                 echo -e "${NOTE} Duplicate skipped: [ ${f} ]"
                 continue
             fi
 
-            seen_files+=("${f}")
+            seen_files["${f}"]=1
             resolved_files+=("${f}")
         done
     done
@@ -1124,6 +1112,12 @@ verify_uploads() {
 
     echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
 
+    # Build a basename-to-path map for O(1) lookup during verification
+    declare -A file_path_map
+    for f in "${resolved_files[@]}"; do
+        file_path_map["$(basename "${f}")"]="${f}"
+    done
+
     # Each line in UPLOAD_RESULTS_FILE has the format: filename=download_url
     # IFS= read -r line + parameter expansion splits on the FIRST '=' only,
     # avoiding URL truncation when the download URL itself contains '=' characters
@@ -1139,11 +1133,8 @@ verify_uploads() {
         local fname_padded
         printf -v fname_padded "%-${max_fname_len}s" "${fname}"
 
-        # Locate the original local file path by matching basename against resolved_files
-        local local_path=""
-        for f in "${resolved_files[@]}"; do
-            [[ "$(basename "${f}")" == "${fname}" ]] && local_path="${f}" && break
-        done
+        # Locate the original local file path using O(1) associative array lookup
+        local local_path="${file_path_map[${fname}]:-}"
 
         if [[ -z "${local_path}" || ! -f "${local_path}" ]]; then
             echo -e "${NOTE} SKIP ${verify_idx}/${verify_total} [ ${fname_padded} ] (local file not found)"
