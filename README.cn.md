@@ -21,32 +21,32 @@
 
 可在工作流文件中配置以下选项：
 
-| 选&nbsp;&nbsp;项 | 要&nbsp;&nbsp;求 | 默&nbsp;&nbsp;&nbsp;认&nbsp;&nbsp;&nbsp;值 | 说&nbsp;&nbsp;明 |
-|-------|-------|-------|-------|
-| `tag` | **必填** | — | 要创建或更新的 Release 标签名称（如 `v1.0.0`）。若指定的 `tag` 在仓库中尚不存在，将在创建 Release 时自动以默认分支的当前提交为基础创建该 Tag。 |
-| `artifacts` | **必填** | — | 要上传的文件路径，支持 glob 通配符和逗号分隔的多路径（如 `dist/*.zip` 或 `dist/*.zip,out/*.tar.gz`）。 |
-| `gh_token` | **必填** | — | 用于 API 认证的 [GITHUB_TOKEN](https://docs.github.com/zh/actions/tutorials/authenticate-with-github_token) 是 GitHub 自动为每个工作流运行提供的内置令牌，无需手动创建。 |
-| `repo` | 可选 | 当前仓库 | 目标仓库，格式为 `<owner>/<repo>`，默认为运行工作流的仓库。 |
-| `allow_updates` | 可选 | `true` | 当指定标签的 Release 已存在时，是否更新其元数据（名称、正文、标志位）。设为 `false` 则跳过已有 Release 的元数据更新。可选值：`true` / `false` |
-| `remove_artifacts` | 可选 | `false` | 上传前是否删除 Release 中的**所有**现有资产文件。优先级高于 `replaces_artifacts`。请谨慎使用。可选值：`true` / `false` |
-| `replaces_artifacts` | 可选 | `true` | 是否替换同名的已有资产文件。设为 `false` 时，上传同名文件时将会跳过，不进行替换。当为 `true` 且已存在同名文件时，系统会先通过 API 查询远端文件的 SHA-256 值，并与本地文件进行比对。若 SHA-256 相同，则跳过重新上传；若 SHA-256 不同或远端文件无 digest 信息，则删除旧资产并重新上传。可选值：`true` / `false` |
-| `upload_timeout` | 可选 | `5` | 单个文件上传超时时间，单位为**分钟**。超时后自动重试，最多重试 3 次，全部失败后跳过当前文件并继续上传下一个。设为 `0` 表示禁用单文件最大时限。注意：即使设为 `0`，防卡死的速度守卫仍然有效，若上传速度连续 60 秒低于 1 KB/s，仍会触发重试机制。 |
-| `make_latest` | 可选 | `true` | 是否将此 Release 标记为最新版本。可选值：`true` / `false` / `legacy`（由发布日期和语义化版本号决定）。 |
-| `prerelease` | 可选 | `false` | 是否将此 Release 标记为预发布版本。可选值：`true` / `false` |
-| `draft` | 可选 | `false` | 是否将此 Release 标记为草稿。可选值：`true` / `false` |
-| `name` | 可选 | `""` | Release 的显示标题名称，留空时自动使用标签名。 |
-| `body` | 可选 | `""` | Release 的 Markdown 正文内容。同时设置 `body_file` 时，此项被覆盖。 |
-| `body_file` | 可选 | `""` | Release 正文内容的 Markdown 文件路径，优先级高于 `body`。 |
-| `out_log` | 可选 | `false` | 是否输出每个步骤的详细 JSON 日志，便于调试。可选值：`true` / `false` |
+| 选&nbsp;&nbsp;项     | 要&nbsp;&nbsp;求 | 默&nbsp;&nbsp;&nbsp;认&nbsp;&nbsp;&nbsp;值 | 说&nbsp;&nbsp;明                                                                                                                                                                                                                                     |
+| -------------------- | ---------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tag`                | **必填**         | —                                          | 要创建或更新的 Release 标签名称（如 `v1.0.0`）。若指定的 `tag` 在仓库中尚不存在，将在创建 Release 时自动以默认分支的当前提交为基础创建该 Tag。                                                                                                       |
+| `artifacts`          | **必填**         | —                                          | 要上传的文件路径，支持 glob 通配符和逗号分隔的多路径（如 `dist/*.zip` 或 `dist/*.zip,out/*.tar.gz`）。                                                                                                                                               |
+| `gh_token`           | **必填**         | —                                          | 用于 API 认证的 [GITHUB_TOKEN](https://docs.github.com/zh/actions/tutorials/authenticate-with-github_token) 是 GitHub 自动为每个工作流运行提供的内置令牌，无需手动创建。                                                                             |
+| `repo`               | 可选             | 当前仓库                                   | 目标仓库，格式为 `<owner>/<repo>`，默认为运行工作流的仓库。                                                                                                                                                                                          |
+| `allow_updates`      | 可选             | `true`                                     | 当指定标签的 Release 已存在时，是否更新其元数据（名称、正文、标志位）。设为 `false` 则跳过已有 Release 的元数据更新。可选值：`true` / `false`                                                                                                        |
+| `remove_artifacts`   | 可选             | `false`                                    | 上传前是否删除 Release 中的**所有**现有资产文件。优先级高于 `replaces_artifacts`。请谨慎使用。可选值：`true` / `false`                                                                                                                               |
+| `replaces_artifacts` | 可选             | `true`                                     | 是否替换同名的已有资产文件。设为 `false` 时，上传同名文件时将会跳过，不进行替换。当为 `true` 且已存在同名文件时，会先比对远端与本地的 SHA-256 值。若相同则跳过重新上传；若不同或远端无 digest 信息，则删除旧资产并重新上传。可选值：`true` / `false` |
+| `upload_timeout`     | 可选             | `5`                                        | 单个文件上传超时时间，单位为**分钟**。超时后自动重试，最多重试 3 次，全部失败后跳过当前文件并继续上传下一个。设为 `0` 表示禁用单文件最大时限。注意：即使设为 `0`，速度监控仍然有效，若上传速度连续 60 秒低于 1 KB/s，仍会触发重试机制。              |
+| `make_latest`        | 可选             | `true`                                     | 是否将此 Release 标记为最新版本。可选值：`true` / `false` / `legacy`（由发布日期和语义化版本号决定）。                                                                                                                                               |
+| `prerelease`         | 可选             | `false`                                    | 是否将此 Release 标记为预发布版本。可选值：`true` / `false`                                                                                                                                                                                          |
+| `draft`              | 可选             | `false`                                    | 是否将此 Release 标记为草稿。可选值：`true` / `false`                                                                                                                                                                                                |
+| `name`               | 可选             | `""`                                       | Release 的显示标题名称，留空时自动使用标签名。                                                                                                                                                                                                       |
+| `body`               | 可选             | `""`                                       | Release 的 Markdown 正文内容。同时设置 `body_file` 时，此项被覆盖。                                                                                                                                                                                  |
+| `body_file`          | 可选             | `""`                                       | Release 正文内容的 Markdown 文件路径，优先级高于 `body`。                                                                                                                                                                                            |
+| `out_log`            | 可选             | `false`                                    | 是否输出每个步骤的详细 JSON 日志，便于调试。可选值：`true` / `false`                                                                                                                                                                                 |
 
 ## 输出参数(可选)
 
-| 输出 | 说明 |
-|------|------|
-| `release_id` | 创建或更新的 Release 的数字 ID。 |
-| `html_url` | Release 页面的 HTML 地址（如 `https://github.com/owner/repo/releases/tag/v1.0.0`）。 |
-| `upload_url` | Release 资产上传 URL（可用于自定义上传步骤）。 |
-| `assets` | JSON 对象，将每个已上传文件名映射到其下载地址（如 `{"file.zip":"https://...","image.img.gz":"https://..."}`）。 |
+| 输出         | 说明                                                                                                            |
+| ------------ | --------------------------------------------------------------------------------------------------------------- |
+| `release_id` | 创建或更新的 Release 的数字 ID。                                                                                |
+| `html_url`   | Release 页面的 HTML 地址（如 `https://github.com/owner/repo/releases/tag/v1.0.0`）。                            |
+| `upload_url` | Release 资产上传 URL（可用于自定义上传步骤）。                                                                  |
+| `assets`     | JSON 对象，将每个已上传文件名映射到其下载地址（如 `{"file.zip":"https://...","image.img.gz":"https://..."}`）。 |
 
 ## 注意事项
 
@@ -61,6 +61,7 @@
     ```
 
   - **或者** 进入仓库的 `Settings` > `Actions` > `General` > `Workflow permissions`，选择 `Read and write permissions`，然后点击 `Save` 保存。注意：YAML 配置方式优先级更高，且遵循最小权限原则，推荐优先使用。
+
 - ♻️ 所有文件上传完成后，该 Action 会自动利用 API 提供的哈希值（`digest: sha256:<hex>`）对每个文件进行验证。
 
 ## 上传进度与日志
