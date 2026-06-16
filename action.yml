@@ -3,78 +3,78 @@ author: "ophub"
 description: "Upload files to GitHub Releases using the GitHub REST API"
 inputs:
   repo:
-    description: "Repo name in the form of <owner>/<repo>"
+    description: "Target repository (<owner>/<repo>)"
     required: false
     default: "${{ github.repository }}"
   tag:
-    description: "Tag name of the release to create or upload assets to (e.g. v1.0.0)"
+    description: "Release tag name (e.g. v1.0.0)"
     required: true
     default: ""
   artifacts:
-    description: "File path(s) to upload as release assets"
+    description: "File paths to upload (supports glob patterns and comma-separated values)"
     required: true
     default: ""
   allow_updates:
-    description: "Update the release metadata if a release for the given tag already exists (true/false)"
+    description: "Update release metadata if tag already exists (true/false)"
     required: false
     default: "true"
   remove_artifacts:
-    description: "Remove ALL existing assets from the release before uploading new ones (true/false)"
+    description: "Remove all existing assets before uploading (true/false)"
     required: false
     default: "false"
   replaces_artifacts:
-    description: "Replace an existing asset that has the same filename (true/false)"
+    description: "Replace same-name assets with SHA-256 comparison (true/false)"
     required: false
     default: "true"
   upload_timeout:
-    description: "Per-file upload timeout in minutes (default: 5)"
+    description: "Per-file upload timeout in minutes, 0 to disable (retries 3 times, stall guard active)"
     required: false
     default: "5"
   make_latest:
-    description: "Mark this release as the latest release (true/false/legacy)"
+    description: "Mark as latest release (true/false/legacy)"
     required: false
     default: "true"
   prerelease:
-    description: "Mark this release as a pre-release (true/false)"
+    description: "Mark as pre-release (true/false)"
     required: false
     default: "false"
   draft:
-    description: "Mark this release as a draft (true/false)"
+    description: "Mark as draft (true/false)"
     required: false
     default: "false"
   name:
-    description: "Display name of the release. Falls back to the tag name when omitted"
+    description: "Release display name (defaults to tag)"
     required: false
     default: ""
   body:
-    description: "Markdown body text for the release (may be multi-line)"
+    description: "Release body text in Markdown"
     required: false
     default: ""
   body_file:
-    description: "Path to a Markdown file whose content is used as the release body (takes precedence over body)"
+    description: "Markdown file for release body (overrides body)"
     required: false
     default: ""
   out_log:
-    description: "Output detailed JSON logs for each step — useful for debugging (true/false)"
+    description: "Enable detailed JSON logging (true/false)"
     required: false
     default: "false"
   gh_token:
-    description: "GitHub token used to authenticate API requests (requires contents: write)"
+    description: "GitHub token for API authentication (needs contents: write)"
     required: true
     default: ""
 
 outputs:
   release_id:
-    description: "Numeric ID of the created or updated release"
+    description: "Release ID"
     value: ${{ steps.upload.outputs.release_id }}
   html_url:
-    description: "HTML URL of the release page"
+    description: "Release page URL"
     value: ${{ steps.upload.outputs.html_url }}
   upload_url:
-    description: "Asset upload URL for the release"
+    description: "Asset upload URL"
     value: ${{ steps.upload.outputs.upload_url }}
   assets:
-    description: "JSON object mapping each uploaded filename to its download URL"
+    description: "JSON map of filename to download URL"
     value: ${{ steps.upload.outputs.assets }}
 
 runs:
