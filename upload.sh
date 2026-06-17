@@ -15,6 +15,7 @@
 #
 # url_encode               : Percent-encode a string for use in a URL query parameter
 # format_size              : Convert byte count to a human-readable string (KiB/MiB/GiB)
+# sanitize_log             : Strip workflow command prefixes (::) from user-controlled strings
 # api_call                 : Execute a GitHub REST API request with retry on transient errors
 #
 # install_dependencies     : Check for required commands and install missing dependencies if possible
@@ -156,27 +157,54 @@ format_size() {
     fi
 }
 
-# api_call <method> <url> [extra curl args...]
+# sanitize_log <string>
+# Strips GitHub Actions workflow command prefixes (::error::, ::warning::, etc.)
+# from user-controlled strings before echoing them to stdout. This prevents
+# log injection attacks where a malicious tag name, filename, or repo name
+# could inject workflow commands like ::error:: or ::add-mask::.
+# Reference: https://docs.github.com/en/actions/reference/security/secure-use
+sanitize_log() {
+    local input="${1}"
+    # Replace :: with a harmless visual marker to neutralise workflow commands
+    printf '%s' "${input//::/⁘⁘}"
+}
+
+# api_call <body_var> <code_var> <method> <url> [extra curl args...]
 # Executes a GitHub API request with automatic retry on transient errors.
-# On completion sets globals:
-#   api_response   – the response body (JSON string)
-#   api_http_code  – the HTTP status code returned by the server
+#
+# Results are written to the caller's variables via nameref (declare -n):
+#   <body_var>  – the response body (JSON string)
+#   <code_var>  – the HTTP status code returned by the server
+#
+# Both variables are reset to empty at the start of each call to prevent
+# stale data from a previous invocation leaking into the caller.
 #
 # Retry policy:
 #   • 401 / 403 / 404  → fail immediately (non-retryable auth / not-found errors)
 #   • 429              → wait RATE_LIMIT_WAIT seconds then retry (up to 3 times)
 #   • any other non-2xx → exponential back-off, up to 3 attempts
 api_call() {
+    # nameref parameters — write results directly into the caller's variables
+    local -n ref_body="${1}"
+    local -n ref_code="${2}"
+    shift 2
+
     local method="${1}" url="${2}"
     # remaining args are passed through to curl as extra flags/headers
     shift 2
 
+    # Reset output variables to prevent stale data from a previous call
+    ref_body=""
+    ref_code=""
+
     # counters and timers for retry logic
-    local attempt=0 max_attempts=3
+    local attempt=0 max_attempts="${RETRY_MAX_ATTEMPTS}"
     # back-off starts at RETRY_WAIT_INIT, doubles each round
     local wait_time="${RETRY_WAIT_INIT}"
     # temp file to capture the response body separately from the status code
     local tmp_body
+    # per-attempt locals — only committed to the nameref on return
+    local status_code resp_body
 
     # Loop until we hit max attempts
     while [[ "${attempt}" -lt "${max_attempts}" ]]; do
@@ -185,7 +213,7 @@ api_call() {
 
         # Send the request; -w '%{http_code}' writes only the status code to stdout;
         # the body goes to tmp_body via -o so both values can be captured independently
-        api_http_code=$(
+        status_code=$(
             curl -sL \
                 --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
                 --speed-limit "${CURL_SPEED_LIMIT}" \
@@ -200,7 +228,7 @@ api_call() {
         )
         local curl_exit="${?}"
         # read body before deleting temp file to ensure we capture the response even if curl fails
-        api_response="$(cat "${tmp_body}" 2>/dev/null)"
+        resp_body="$(cat "${tmp_body}" 2>/dev/null)"
         rm -f "${tmp_body}"
 
         # curl failed at the transport level (DNS, TLS, timeout, etc.) — not an HTTP error
@@ -213,23 +241,30 @@ api_call() {
                 wait_time=$((wait_time * 2))
                 continue
             fi
+            # Final failure: commit last-attempt values so caller can inspect them
+            ref_body="${resp_body}"
+            ref_code="${status_code}"
             return 1
         fi
 
         # Non-retryable auth / not-found errors — let caller interpret the response
-        if [[ "${api_http_code}" =~ ^(401|403|404)$ ]]; then
+        if [[ "${status_code}" =~ ^(401|403|404)$ ]]; then
+            ref_body="${resp_body}"
+            ref_code="${status_code}"
             return 0
         fi
 
         # 2xx = success; return immediately
-        if [[ "${api_http_code}" =~ ^2 ]]; then
+        if [[ "${status_code}" =~ ^2 ]]; then
+            ref_body="${resp_body}"
+            ref_code="${status_code}"
             return 0
         fi
 
         # 429 = rate limited; pause for the full RATE_LIMIT_WAIT period before retrying.
         # attempt is already incremented at the top of the loop, so this still counts
         # toward max_attempts — prevents an infinite loop if the server never stops rate-limiting.
-        if [[ "${api_http_code}" == "429" ]]; then
+        if [[ "${status_code}" == "429" ]]; then
             echo -e "${NOTE} (api_call) Rate limited (HTTP 429) on attempt ${attempt}/${max_attempts}, waiting ${RATE_LIMIT_WAIT}s..."
             sleep "${RATE_LIMIT_WAIT}"
             continue
@@ -237,8 +272,8 @@ api_call() {
 
         # Other server-side or transient errors (5xx, etc.) — back-off and retry
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
-        echo -e "${NOTE} (api_call) HTTP ${api_http_code} on attempt ${attempt}/${max_attempts}: ${api_error}"
+        api_error="$(echo "${resp_body}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
+        echo -e "${NOTE} (api_call) HTTP ${status_code} on attempt ${attempt}/${max_attempts}: ${api_error}"
         if [[ "${attempt}" -lt "${max_attempts}" ]]; then
             echo -e "${NOTE} (api_call) Retrying in ${wait_time}s..."
             sleep "${wait_time}"
@@ -246,7 +281,9 @@ api_call() {
         fi
     done
 
-    # caller checks api_http_code to determine success or failure
+    # Exhausted all retries — commit last-attempt values so caller can inspect them
+    ref_body="${resp_body}"
+    ref_code="${status_code}"
     return 0
 }
 
@@ -297,6 +334,11 @@ init_var() {
     # GH_TOKEN is kept separate and never exposed in INPUT_* to avoid leaking
     # the token value into the process list or shell history.
     gh_token="${GH_TOKEN:-}"
+
+    # Mask the token in all GitHub Actions log output to prevent accidental exposure.
+    # Any subsequent echo/printf that contains this value will be redacted as "***".
+    [[ -n "${gh_token}" ]] && echo "::add-mask::${gh_token}"
+
     repo="${INPUT_REPO:-}"
     tag="${INPUT_TAG:-}"
     artifacts="${INPUT_ARTIFACTS:-}"
@@ -321,18 +363,18 @@ init_var() {
     # ── Validate boolean / enum inputs ───────────────────────────────────
     # Guards standalone invocation of upload.sh outside action.yml where
     # action.yml's own validate_boolean block is not executed.
-    local _pair _name _val
-    for _pair in \
+    local bool_pair bool_name bool_value
+    for bool_pair in \
         "allow_updates:${allow_updates}" \
         "remove_artifacts:${remove_artifacts}" \
         "replaces_artifacts:${replaces_artifacts}" \
         "prerelease:${prerelease}" \
         "draft:${draft}" \
         "out_log:${out_log}"; do
-        _name="${_pair%%:*}"
-        _val="${_pair#*:}"
-        [[ ! "${_val}" =~ ^(true|false)$ ]] &&
-            error_msg "Invalid value for ${_name}: '${_val}' must be 'true' or 'false'."
+        bool_name="${bool_pair%%:*}"
+        bool_value="${bool_pair#*:}"
+        [[ ! "${bool_value}" =~ ^(true|false)$ ]] &&
+            error_msg "Invalid value for ${bool_name}: '${bool_value}' must be 'true' or 'false'."
     done
     [[ ! "${make_latest}" =~ ^(true|false|legacy)$ ]] &&
         error_msg "Invalid value for make_latest: '${make_latest}' must be 'true', 'false', or 'legacy'."
@@ -363,9 +405,9 @@ init_var() {
         timeout_display="${upload_timeout} min (${UPLOAD_MAX_TIME}s)"
     fi
 
-    echo -e "${INFO} repo:               [ ${repo} ]"
-    echo -e "${INFO} tag:                [ ${tag} ]"
-    echo -e "${INFO} artifacts:          [ ${artifacts} ]"
+    echo -e "${INFO} repo:               [ $(sanitize_log "${repo}") ]"
+    echo -e "${INFO} tag:                [ $(sanitize_log "${tag}") ]"
+    echo -e "${INFO} artifacts:          [ $(sanitize_log "${artifacts}") ]"
     echo -e "${INFO} allow_updates:      [ ${allow_updates} ]"
     echo -e "${INFO} remove_artifacts:   [ ${remove_artifacts} ]"
     echo -e "${INFO} replaces_artifacts: [ ${replaces_artifacts} ]"
@@ -373,7 +415,7 @@ init_var() {
     echo -e "${INFO} make_latest:        [ ${make_latest} ]"
     echo -e "${INFO} prerelease:         [ ${prerelease} ]"
     echo -e "${INFO} draft:              [ ${draft} ]"
-    echo -e "${INFO} release_name:       [ ${release_name} ]"
+    echo -e "${INFO} release_name:       [ $(sanitize_log "${release_name}") ]"
     echo -e "${INFO} out_log:            [ ${out_log} ]"
     echo -e ""
 }
@@ -381,33 +423,34 @@ init_var() {
 # Queries the GitHub API for an existing release matching the configured tag.
 # Sets globals: release_id, upload_url, html_url (empty strings if not found).
 get_release() {
-    echo -e "${STEPS} Querying release info for tag [ ${tag} ]..."
+    echo -e "${STEPS} Querying release info for tag [ $(sanitize_log "${tag}") ]..."
 
     # Reset globals so callers can distinguish "not found" from "not yet queried"
     release_id=""
     upload_url=""
     html_url=""
 
-    api_call GET "https://api.github.com/repos/${repo}/releases/tags/${tag}"
+    local resp code
+    api_call resp code GET "${GITHUB_API_URL:-https://api.github.com}/repos/${repo}/releases/tags/${tag}"
 
-    if [[ "${api_http_code}" == "200" ]]; then
-        release_id="$(echo "${api_response}" | jq -r '.id')"
+    if [[ "${code}" == "200" ]]; then
+        release_id="$(echo "${resp}" | jq -r '.id')"
         # The upload_url from the API contains an RFC 6570 template suffix — strip it for plain curl use
-        upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
-        html_url="$(echo "${api_response}" | jq -r '.html_url')"
+        upload_url="$(echo "${resp}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
+        html_url="$(echo "${resp}" | jq -r '.html_url')"
         echo -e "${INFO} Found existing release: id=[ ${release_id} ], url=[ ${html_url} ]"
-        [[ "${out_log}" == "true" ]] && echo -e "${INFO} Full release response:\n${api_response}"
-    elif [[ "${api_http_code}" == "404" ]]; then
+        [[ "${out_log}" == "true" ]] && echo -e "${INFO} Full release response:\n${resp}"
+    elif [[ "${code}" == "404" ]]; then
         # 404 is the normal "not found" response — not an error
-        echo -e "${INFO} No existing release found for tag [ ${tag} ]."
-    elif [[ "${api_http_code}" == "403" ]]; then
+        echo -e "${INFO} No existing release found for tag [ $(sanitize_log "${tag}") ]."
+    elif [[ "${code}" == "403" ]]; then
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
-        error_release_permission "query" "${api_http_code}" "${api_error}"
+        api_error="$(echo "${resp}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
+        error_release_permission "query" "${code}" "${api_error}"
     else
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
-        error_msg "Failed to query release (HTTP ${api_http_code}): ${api_error}"
+        api_error="$(echo "${resp}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
+        error_msg "Failed to query release (HTTP ${code}): ${api_error}"
     fi
 }
 
@@ -451,7 +494,7 @@ build_release_payload() {
 # Creates a brand-new release for the configured tag via POST.
 # Populates globals: release_id, upload_url, html_url.
 create_release() {
-    echo -e "${STEPS} Creating new release for tag [ ${tag} ]..."
+    echo -e "${STEPS} Creating new release for tag [ $(sanitize_log "${tag}") ]..."
 
     # Convert shell "true"/"false" strings to bare JSON booleans for the API payload
     local draft_val prerelease_val
@@ -466,36 +509,37 @@ create_release() {
     [[ "${out_log}" == "true" ]] && echo -e "${INFO} Create release payload:\n${payload}"
 
     # POST to the releases endpoint to create a new release; the response includes the new release ID and upload URL
-    api_call POST "https://api.github.com/repos/${repo}/releases" \
+    local resp code
+    api_call resp code POST "${GITHUB_API_URL:-https://api.github.com}/repos/${repo}/releases" \
         -H "Content-Type: application/json" \
         -d "${payload}"
 
     # 201 Created on success (200 accepted as well for resilience)
-    if [[ "${api_http_code}" =~ ^(200|201)$ ]]; then
-        release_id="$(echo "${api_response}" | jq -r '.id')"
+    if [[ "${code}" =~ ^(200|201)$ ]]; then
+        release_id="$(echo "${resp}" | jq -r '.id')"
         # Strip RFC 6570 template suffix from upload_url (same as in get_release)
-        upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
-        html_url="$(echo "${api_response}" | jq -r '.html_url')"
+        upload_url="$(echo "${resp}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
+        html_url="$(echo "${resp}" | jq -r '.html_url')"
         echo -e "${SUCCESS} Release created: id=[ ${release_id} ], url=[ ${html_url} ]"
-    elif [[ "${api_http_code}" == "403" ]]; then
+    elif [[ "${code}" == "403" ]]; then
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
-        error_release_permission "create" "${api_http_code}" "${api_error}"
-    elif [[ "${api_http_code}" == "422" ]]; then
+        api_error="$(echo "${resp}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
+        error_release_permission "create" "${code}" "${api_error}"
+    elif [[ "${code}" == "422" ]]; then
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
-        error_release_permission "create" "${api_http_code}" "${api_error}"
+        api_error="$(echo "${resp}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
+        error_release_permission "create" "${code}" "${api_error}"
     else
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
-        error_msg "Failed to create release (HTTP ${api_http_code}): ${api_error}"
+        api_error="$(echo "${resp}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
+        error_msg "Failed to create release (HTTP ${code}): ${api_error}"
     fi
 }
 
 # Updates metadata (name, body, flags) of the already-existing release via PATCH.
 # Refreshes globals: upload_url, html_url.
 update_release() {
-    echo -e "${STEPS} Updating release [ ${release_id} ] for tag [ ${tag} ]..."
+    echo -e "${STEPS} Updating release [ ${release_id} ] for tag [ $(sanitize_log "${tag}") ]..."
 
     # Convert shell "true"/"false" strings to bare JSON booleans for the API payload
     local draft_val prerelease_val
@@ -510,27 +554,28 @@ update_release() {
     [[ "${out_log}" == "true" ]] && echo -e "${INFO} Update release payload:\n${payload}"
 
     # PATCH sends a full payload to the release ID endpoint; GitHub applies all provided fields
-    api_call PATCH "https://api.github.com/repos/${repo}/releases/${release_id}" \
+    local resp code
+    api_call resp code PATCH "${GITHUB_API_URL:-https://api.github.com}/repos/${repo}/releases/${release_id}" \
         -H "Content-Type: application/json" \
         -d "${payload}"
 
     # 200 OK on success (201 accepted as well for resilience)
-    if [[ "${api_http_code}" =~ ^(200|201)$ ]]; then
-        upload_url="$(echo "${api_response}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
-        html_url="$(echo "${api_response}" | jq -r '.html_url')"
+    if [[ "${code}" =~ ^(200|201)$ ]]; then
+        upload_url="$(echo "${resp}" | jq -r '.upload_url' | sed 's/{?name,label}$//')"
+        html_url="$(echo "${resp}" | jq -r '.html_url')"
         echo -e "${SUCCESS} Release updated: id=[ ${release_id} ], url=[ ${html_url} ]"
-    elif [[ "${api_http_code}" == "403" ]]; then
+    elif [[ "${code}" == "403" ]]; then
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
-        error_release_permission "update" "${api_http_code}" "${api_error}"
-    elif [[ "${api_http_code}" == "422" ]]; then
+        api_error="$(echo "${resp}" | jq -r '.message // "Forbidden"' 2>/dev/null)"
+        error_release_permission "update" "${code}" "${api_error}"
+    elif [[ "${code}" == "422" ]]; then
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
-        error_release_permission "update" "${api_http_code}" "${api_error}"
+        api_error="$(echo "${resp}" | jq -r '.message // "Validation Failed"' 2>/dev/null)"
+        error_release_permission "update" "${code}" "${api_error}"
     else
         local api_error
-        api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
-        error_msg "Failed to update release (HTTP ${api_http_code}): ${api_error}"
+        api_error="$(echo "${resp}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
+        error_msg "Failed to update release (HTTP ${code}): ${api_error}"
     fi
 }
 
@@ -567,6 +612,9 @@ expand_artifacts() {
     resolved_files=()
     # tracks already-added paths for O(1) deduplication using associative array
     declare -A seen_files
+    # files skipped due to exceeding the GitHub 2GB asset limit (for summary reporting)
+    local oversized_files=()
+    local fsz
 
     # Split the comma-separated artifact string into individual pattern entries
     IFS=',' read -r -a artifact_entries <<<"${artifacts}"
@@ -583,7 +631,7 @@ expand_artifacts() {
         shopt -u nullglob
 
         if [[ "${#matched[@]}" -eq 0 ]]; then
-            echo -e "${NOTE} Pattern matched no files: [ ${entry} ]"
+            echo -e "${NOTE} Pattern matched no files: [ $(sanitize_log "${entry}") ]"
             continue
         fi
 
@@ -601,36 +649,73 @@ expand_artifacts() {
                 continue
             fi
 
+            # GitHub Release assets have a maximum size of 2 GiB — the server
+            # rejects files exceeding this limit with HTTP 413. Pre-check here
+            # to avoid wasting time on uploads, timeouts, and retries that will
+            # never succeed.
+            fsz="$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null || echo "0")"
+            if [[ "${fsz}" -gt 2147483648 ]]; then
+                oversized_files+=("${f}")
+                seen_files["${f}"]=1
+                continue
+            fi
+
             seen_files["${f}"]=1
             resolved_files+=("${f}")
         done
     done
 
-    # Abort early if no files were resolved — nothing to upload
-    if [[ "${#resolved_files[@]}" -eq 0 ]]; then
-        error_msg "No files matched the provided artifact patterns: [ ${artifacts} ]"
-    fi
-
-    # ── Print numbered file manifest ──────────────────────────────────────
+    # ── Print numbered file manifest (only when there are files to upload) ──
     # Shows index, filename, and size so the upload queue is visible upfront
     local total="${#resolved_files[@]}"
-    echo -e "${INFO} Total files to upload: [ ${total} ]"
-    echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
-    local i=0
-    local total_bytes=0
-    for f in "${resolved_files[@]}"; do
-        i=$((i + 1))
-        local fsz
-        # stat -c (GNU/Linux) and stat -f (macOS) use different format flags
-        fsz="$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null || echo "0")"
-        total_bytes=$((total_bytes + fsz))
-        printf "%b  %3d/%-3d  %10s   %s\n" \
-            "${INFO}" "${i}" "${total}" "$(format_size "${fsz}")" "$(basename "${f}")"
-    done
-    echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
-    echo -e "${INFO} Total: [ ${total} ] files,  $(format_size "${total_bytes}")"
+    if [[ "${total}" -gt 0 ]]; then
+        echo -e "${INFO} Total files to upload: [ ${total} ]"
+        echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
+        local i=0
+        local total_bytes=0
+        for f in "${resolved_files[@]}"; do
+            i=$((i + 1))
+            # stat -c (GNU/Linux) and stat -f (macOS) use different format flags
+            fsz="$(stat -c '%s' "${f}" 2>/dev/null || stat -f '%z' "${f}" 2>/dev/null || echo "0")"
+
+            total_bytes=$((total_bytes + fsz))
+            printf "%b  %3d/%-3d  %10s   %s\n" \
+                "${INFO}" "${i}" "${total}" "$(format_size "${fsz}")" "$(basename "${f}")"
+        done
+        echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
+        echo -e "${INFO} Total: [ ${total} ] files,  $(format_size "${total_bytes}")"
+    fi
+
+    # Print oversized files summary if any (formatted like skipped_files list)
+    if [[ "${#oversized_files[@]}" -gt 0 ]]; then
+        local os_total="${#oversized_files[@]}"
+        local os_idx=0
+        local max_osname_len=0
+        local osn osn_padded osz
+        for os_path in "${oversized_files[@]}"; do
+            osn="$(basename "${os_path}")"
+            [[ "${#osn}" -gt "${max_osname_len}" ]] && max_osname_len="${#osn}"
+        done
+        for os_path in "${oversized_files[@]}"; do
+            os_idx=$((os_idx + 1))
+            osn="$(basename "${os_path}")"
+            printf -v osn_padded "%-${max_osname_len}s" "${osn}"
+            osz="$(stat -c '%s' "${os_path}" 2>/dev/null || stat -f '%z' "${os_path}" 2>/dev/null || echo "0")"
+            echo -e "${WARN} OVERSIZE ${os_idx}/${os_total} [ ${osn_padded} ]  [ size: $(format_size "${osz}") ]"
+        done
+    fi
+
     echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
     echo -e ""
+
+    # Abort early if no files were resolved — nothing to upload
+    if [[ "${total}" -eq 0 ]]; then
+        if [[ "${#oversized_files[@]}" -gt 0 ]]; then
+            error_msg "All [ ${#oversized_files[@]} ] matched file(s) exceed the GitHub 2GB limit. Nothing to upload."
+        else
+            error_msg "No files matched the provided artifact patterns: [ ${artifacts} ]"
+        fi
+    fi
 }
 
 # Fetches all existing asset records for the current release (paginated) and
@@ -641,23 +726,23 @@ fetch_assets_list() {
     >"${ASSETS_LIST_FILE}"
 
     # GitHub API paginates results; loop through pages until we get fewer items than the page size
-    local page=1
+    local page=1 resp code
     while true; do
-        api_call GET \
-            "https://api.github.com/repos/${repo}/releases/${release_id}/assets?per_page=${GITHUB_PER_PAGE}&page=${page}"
+        api_call resp code GET \
+            "${GITHUB_API_URL:-https://api.github.com}/repos/${repo}/releases/${release_id}/assets?per_page=${GITHUB_PER_PAGE}&page=${page}"
 
-        if [[ "${api_http_code}" != "200" ]]; then
+        if [[ "${code}" != "200" ]]; then
             local api_error
             # Extract the error message from the API response, defaulting to "Unknown error" if not present
-            api_error="$(echo "${api_response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
-            echo -e "${ERROR} Failed to list assets page ${page} (HTTP ${api_http_code}): ${api_error}"
+            api_error="$(echo "${resp}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
+            echo -e "${ERROR} Failed to list assets page ${page} (HTTP ${code}): ${api_error}"
             break
         fi
 
         local count
-        count="$(echo "${api_response}" | jq '. | length')"
+        count="$(echo "${resp}" | jq '. | length')"
         # Extract only the fields needed downstream; digest is the GitHub-supplied SHA-256 checksum
-        echo "${api_response}" | jq -c \
+        echo "${resp}" | jq -c \
             '.[] | {id: .id, name: .name, state: .state, digest: (.digest // null), browser_download_url: (.browser_download_url // "")}' \
             >>"${ASSETS_LIST_FILE}"
 
@@ -677,37 +762,41 @@ fetch_assets_list() {
 delete_asset() {
     local asset_id="${1}" asset_name="${2}"
     local file_index="${3:-}" total_files="${4:-}"
+    # Sanitised copy for log output
+    local safe_asset_name
+    safe_asset_name="$(sanitize_log "${asset_name}")"
     # Build the (n/N) prefix only when caller passes index/total
     local idx_prefix=""
     [[ -n "${file_index}" && -n "${total_files}" ]] && idx_prefix="(${file_index}/${total_files})"
     local attempt=0 wait_time="${RETRY_WAIT_INIT}"
+    local resp code
 
     # Loop through each attempt: on 200/204 return success, on 404 treat as already deleted,
     # on 429 wait and retry, on other errors apply exponential back-off and retry
     while [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; do
         attempt=$((attempt + 1))
 
-        api_call DELETE \
-            "https://api.github.com/repos/${repo}/releases/assets/${asset_id}"
+        api_call resp code DELETE \
+            "${GITHUB_API_URL:-https://api.github.com}/repos/${repo}/releases/assets/${asset_id}"
 
-        if [[ "${api_http_code}" =~ ^(200|204)$ ]]; then
-            echo -e "${INFO} │  ${idx_prefix} Deleted asset: [ ${asset_name} ] (id=${asset_id})"
+        if [[ "${code}" =~ ^(200|204)$ ]]; then
+            echo -e "${INFO} │  ${idx_prefix} Deleted asset: [ ${safe_asset_name} ] (id=${asset_id})"
             return 0
-        elif [[ "${api_http_code}" == "404" ]]; then
+        elif [[ "${code}" == "404" ]]; then
             # Asset already gone — treat as success to avoid blocking upload retries
-            echo -e "${NOTE} │  ${idx_prefix} Asset [ ${asset_name} ] not found (already deleted), skipping."
+            echo -e "${NOTE} │  ${idx_prefix} Asset [ ${safe_asset_name} ] not found (already deleted), skipping."
             return 0
-        elif [[ "${api_http_code}" == "429" ]]; then
-            echo -e "${NOTE} │  ${idx_prefix} Rate limited while deleting [ ${asset_name} ], waiting ${RATE_LIMIT_WAIT}s... (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
+        elif [[ "${code}" == "429" ]]; then
+            echo -e "${NOTE} │  ${idx_prefix} Rate limited while deleting [ ${safe_asset_name} ], waiting ${RATE_LIMIT_WAIT}s... (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
             sleep "${RATE_LIMIT_WAIT}"
         else
-            echo -e "${NOTE} │  ${idx_prefix} Failed to delete [ ${asset_name} ] (HTTP ${api_http_code}), attempt ${attempt}/${RETRY_MAX_ATTEMPTS}"
+            echo -e "${NOTE} │  ${idx_prefix} Failed to delete [ ${safe_asset_name} ] (HTTP ${code}), attempt ${attempt}/${RETRY_MAX_ATTEMPTS}"
             # Apply exponential back-off before the next attempt
             [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]] && sleep "${wait_time}" && wait_time=$((wait_time * 2))
         fi
     done
 
-    echo -e "${ERROR} Could not delete asset [ ${asset_name} ] after ${RETRY_MAX_ATTEMPTS} attempts."
+    echo -e "${ERROR} Could not delete asset [ ${safe_asset_name} ] after ${RETRY_MAX_ATTEMPTS} attempts."
     return 1
 }
 
@@ -752,6 +841,9 @@ upload_asset() {
     local total_files="${3}"
     local file_name
     file_name="$(basename "${file_path}")"
+    # Sanitised copy for log output — prevents workflow-command injection via filenames
+    local safe_name
+    safe_name="$(sanitize_log "${file_name}")"
 
     # Gather file metadata for the progress header
     local file_size_bytes file_size_human
@@ -776,7 +868,7 @@ upload_asset() {
     fi
 
     # ── Tree-border progress header ──────────────────────────────────────
-    echo -e "${FILE} ┌─ (${file_index}/${total_files}) Uploading: [ ${file_name} ]"
+    echo -e "${FILE} ┌─ (${file_index}/${total_files}) Uploading: [ ${safe_name} ]"
     echo -e "${SIZE} │  (${file_index}/${total_files}) Size: ${file_size_human}  MIME: ${mime_type}  ${timeout_info}"
 
     # Initialize retry loop variables
@@ -869,7 +961,7 @@ upload_asset() {
             # Print the captured curl stderr on the final attempt to expose the root cause
             [[ -n "${curl_stderr_msg}" ]] &&
                 echo -e "${WARN} │  (${file_index}/${total_files}) curl stderr: ${curl_stderr_msg}"
-            echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${file_name} ] (${curl_reason} after ${RETRY_MAX_ATTEMPTS} attempts). Skipping."
+            echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${safe_name} ] (${curl_reason} after ${RETRY_MAX_ATTEMPTS} attempts). Skipping."
             echo ""
             return 1
         fi
@@ -878,7 +970,7 @@ upload_asset() {
         if [[ "${http_code}" =~ ^(200|201)$ ]]; then
             local download_url
             download_url="$(echo "${response}" | jq -r '.browser_download_url')"
-            echo -e "${DONE} │  (${file_index}/${total_files}) Upload completed in ${elapsed}s: [ ${file_name} ]"
+            echo -e "${DONE} │  (${file_index}/${total_files}) Upload completed in ${elapsed}s: [ ${safe_name} ]"
             echo -e "${INFO} └─ (${file_index}/${total_files}) Download URL: [ ${download_url} ]"
             echo ""
 
@@ -892,11 +984,11 @@ upload_asset() {
             if [[ "${replaces_artifacts}" == "true" ]]; then
                 replace_cycles=$((replace_cycles + 1))
                 if [[ "${replace_cycles}" -gt "${MAX_REPLACE_CYCLES}" ]]; then
-                    echo -e "${WARN} └─ (${file_index}/${total_files}) Asset [ ${file_name} ] still conflicting after ${MAX_REPLACE_CYCLES} replace cycles (concurrent upload race). Skipping."
+                    echo -e "${WARN} └─ (${file_index}/${total_files}) Asset [ ${safe_name} ] still conflicting after ${MAX_REPLACE_CYCLES} replace cycles (concurrent upload race). Skipping."
                     echo ""
                     return 1
                 fi
-                echo -e "${INFO} │  (${file_index}/${total_files}) Asset [ ${file_name} ] already exists; checking SHA-256 before replacing."
+                echo -e "${INFO} │  (${file_index}/${total_files}) Asset [ ${safe_name} ] already exists; checking SHA-256 before replacing."
                 fetch_assets_list
                 local existing_id existing_digest existing_download_url
                 existing_id="$(jq -r --arg n "${file_name}" \
@@ -910,7 +1002,7 @@ upload_asset() {
                 local local_hash_check=""
                 local_hash_check="$(${SHA256_CMD} "${file_path}" 2>/dev/null | awk '{print $1}')"
                 if [[ -n "${local_hash_check}" && "${existing_digest}" == "sha256:${local_hash_check}" ]]; then
-                    echo -e "${DONE} │  (${file_index}/${total_files}) SHA-256 verified identical; skipping re-upload: [ ${file_name} ]"
+                    echo -e "${DONE} │  (${file_index}/${total_files}) SHA-256 verified identical; skipping re-upload: [ ${safe_name} ]"
                     echo -e "${INFO} └─ (${file_index}/${total_files}) Download URL: [ ${existing_download_url} ]"
                     echo ""
                     # Record as skipped (not a failure); caller counts return 2 as skipped
@@ -919,9 +1011,9 @@ upload_asset() {
 
                 # If we get here, the existing asset is different (or has no digest) — delete it and retry the upload.
                 if [[ -z "${existing_digest}" || "${existing_digest}" == "null" ]]; then
-                    echo -e "${INFO} │  (${file_index}/${total_files}) No remote digest available for [ ${file_name} ]; replacing."
+                    echo -e "${INFO} │  (${file_index}/${total_files}) No remote digest available for [ ${safe_name} ]; replacing."
                 else
-                    echo -e "${INFO} │  (${file_index}/${total_files}) SHA-256 mismatch for [ ${file_name} ]; replacing."
+                    echo -e "${INFO} │  (${file_index}/${total_files}) SHA-256 mismatch for [ ${safe_name} ]; replacing."
                 fi
 
                 # Delete the existing asset so the re-upload does not hit another 422 duplicate-name conflict.
@@ -936,7 +1028,7 @@ upload_asset() {
                 # Re-upload immediately — no sleep needed after a delete
                 continue
             else
-                echo -e "${WARN} └─ (${file_index}/${total_files}) Asset [ ${file_name} ] already exists and replaces_artifacts=false. Skipping."
+                echo -e "${WARN} └─ (${file_index}/${total_files}) Asset [ ${safe_name} ] already exists and replaces_artifacts=false. Skipping."
                 echo ""
                 # return 2 = skipped (not an error, just intentionally bypassed)
                 return 2
@@ -966,7 +1058,7 @@ upload_asset() {
         fi
     done
 
-    echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${file_name} ] failed after ${RETRY_MAX_ATTEMPTS} attempts. Skipping."
+    echo -e "${WARN} └─ (${file_index}/${total_files}) Permanent failure: [ ${safe_name} ] failed after ${RETRY_MAX_ATTEMPTS} attempts. Skipping."
     echo ""
     return 1
 }
@@ -976,6 +1068,8 @@ upload_asset() {
 # delete it so the retry can start fresh without hitting a duplicate-name 422.
 cleanup_partial_upload() {
     local file_name="${1}" file_index="${2}" total_files="${3}"
+    local safe_name
+    safe_name="$(sanitize_log "${file_name}")"
     # refresh asset list to reflect the latest server state
     fetch_assets_list
 
@@ -988,7 +1082,7 @@ cleanup_partial_upload() {
     # Fully-uploaded assets must not be touched here — they were completed by a concurrent
     # job or an earlier attempt and are still valid.
     if [[ -n "${stale_id}" && "${stale_state}" != "uploaded" ]]; then
-        echo -e "${NOTE} │  (${file_index}/${total_files}) Removing partial asset [ ${file_name} ] (state=${stale_state}, id=${stale_id}) before retry..."
+        echo -e "${NOTE} │  (${file_index}/${total_files}) Removing partial asset [ ${safe_name} ] (state=${stale_state}, id=${stale_id}) before retry..."
         delete_asset "${stale_id}" "${file_name}" "${file_index}" "${total_files}"
     fi
 }
@@ -1038,7 +1132,7 @@ upload_all_assets() {
             [[ "${is_skipped}" == "true" ]] && continue
             # Use -F (fixed string) so filenames with regex special chars (. + [ etc.) match literally
             grep -qF "${fname}=" "${UPLOAD_RESULTS_FILE}" 2>/dev/null ||
-                echo -e "${NOTE}   - ${fname}"
+                echo -e "${NOTE}   - $(sanitize_log "${fname}")"
         done
     fi
 
@@ -1047,15 +1141,14 @@ upload_all_assets() {
         local skip_total="${#skipped_files[@]}"
         local skip_idx=0
         local max_sfname_len=0
+        local sfn sfn_padded sf_hash
         for sf_path in "${skipped_files[@]}"; do
-            local sfn
             sfn="$(basename "${sf_path}")"
             [[ "${#sfn}" -gt "${max_sfname_len}" ]] && max_sfname_len="${#sfn}"
         done
         for sf_path in "${skipped_files[@]}"; do
             skip_idx=$((skip_idx + 1))
-            local sfn sfn_padded sf_hash
-            sfn="$(basename "${sf_path}")"
+            sfn="$(sanitize_log "$(basename "${sf_path}")")"
             printf -v sfn_padded "%-${max_sfname_len}s" "${sfn}"
             sf_hash="$(${SHA256_CMD} "${sf_path}" 2>/dev/null | awk '{print $1}')"
             if [[ -n "${sf_hash}" ]]; then
@@ -1105,9 +1198,9 @@ verify_uploads() {
 
     # Pre-compute the longest filename so all columns can be padded to the same width
     local max_fname_len=0
-    while IFS= read -r _line; do
-        local _n="${_line%%=*}"
-        [[ "${#_n}" -gt "${max_fname_len}" ]] && max_fname_len="${#_n}"
+    while IFS= read -r result_line; do
+        local entry_name="${result_line%%=*}"
+        [[ "${#entry_name}" -gt "${max_fname_len}" ]] && max_fname_len="${#entry_name}"
     done <"${UPLOAD_RESULTS_FILE}"
 
     echo -e "${INFO} ────────────────────────────────────────────────────────────────────────"
@@ -1131,7 +1224,7 @@ verify_uploads() {
 
         # Pad filename to the max width so the sha256 column stays vertically aligned
         local fname_padded
-        printf -v fname_padded "%-${max_fname_len}s" "${fname}"
+        printf -v fname_padded "%-${max_fname_len}s" "$(sanitize_log "${fname}")"
 
         # Locate the original local file path using O(1) associative array lookup
         local local_path="${file_path_map[${fname}]:-}"
@@ -1208,12 +1301,24 @@ set_action_outputs() {
     fi
 
     echo -e "${INFO} Writing action outputs..."
-    # Append to GITHUB_OUTPUT (the file is created and managed by the Actions runner)
+    # Append to GITHUB_OUTPUT using the heredoc delimiter format.
+    # This is the GitHub-recommended approach that safely handles values
+    # containing newlines, special characters, or workflow command prefixes.
+    # Reference: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/workflow-commands-for-github-actions#multiline-strings
+    local delimiter="ghadelimiter_b8f5c3e2"
     {
-        echo "release_id=${release_id}"
-        echo "html_url=${html_url}"
-        echo "upload_url=${upload_url}"
-        echo "assets=${assets_json}"
+        echo "release_id<<${delimiter}"
+        echo "${release_id}"
+        echo "${delimiter}"
+        echo "html_url<<${delimiter}"
+        echo "${html_url}"
+        echo "${delimiter}"
+        echo "upload_url<<${delimiter}"
+        echo "${upload_url}"
+        echo "${delimiter}"
+        echo "assets<<${delimiter}"
+        echo "${assets_json}"
+        echo "${delimiter}"
     } >>"${GITHUB_OUTPUT:-/dev/null}"
 
     echo -e "${INFO} release_id:  [ ${release_id} ]"
@@ -1223,6 +1328,16 @@ set_action_outputs() {
 }
 
 echo -e "${STEPS} Welcome! Starting upload to GitHub Releases."
+
+# Bash 4.3+ is required for:
+#   • declare -A (associative arrays, bash 4.0+)
+#   • declare -n (nameref variables, bash 4.3+)
+# macOS system bash is 3.2; GitHub-hosted runners provide bash 5.x via Homebrew.
+if [[ "${BASH_VERSINFO[0]}" -lt 4 || ("${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -lt 3) ]]; then
+    echo -e "${ERROR} bash 4.3+ required (current: ${BASH_VERSION})."
+    echo -e "${NOTE} On macOS, install a newer bash: brew install bash"
+    exit 1
+fi
 
 # PID-suffixed temp file names in /tmp avoid collisions when multiple workflow jobs run in parallel
 ASSETS_LIST_FILE="/tmp/json_assets_list_$$"
