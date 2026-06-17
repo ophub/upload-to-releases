@@ -83,7 +83,7 @@ This action prints detailed real-time progress for every file:
 [ FILE ] ┌─ (1/5) Uploading: [ firmware-arm64.img.gz ]
 [ SIZE ] │  (1/5) Size: 1.23 GiB  MIME: application/gzip  timeout=5min
 [ DONE ] │  (1/5) Upload completed in 87s: [ firmware-arm64.img.gz ]
-[ DONE ] └─ (1/5) Download URL: [ https://github.com/owner/repo/releases/download/v1.0.0/firmware-arm64.img.gz ]
+[ INFO  ] └─ (1/5) Download URL: [ https://github.com/owner/repo/releases/download/v1.0.0/firmware-arm64.img.gz ]
 
 ...
 [ SUCCESS ] Upload summary: [ 5 ] total, [ 5 ] succeeded, [ 0 ] failed, [ 0 ] skipped.
