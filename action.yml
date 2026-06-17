@@ -9,13 +9,11 @@ inputs:
   tag:
     description: "Release tag name (e.g. v1.0.0)"
     required: true
-    default: ""
   artifacts:
     description: "File paths to upload (supports glob patterns and comma-separated values)"
     required: true
-    default: ""
   allow_updates:
-    description: "Update release metadata if tag already exists (true/false)"
+    description: "Update release metadata (name, body, flags) if tag already exists (true/false)"
     required: false
     default: "true"
   remove_artifacts:
@@ -61,7 +59,6 @@ inputs:
   gh_token:
     description: "GitHub token for API authentication (needs contents: write)"
     required: true
-    default: ""
 
 outputs:
   release_id:
@@ -103,70 +100,13 @@ runs:
         INPUT_BODY_FILE: ${{ inputs.body_file }}
         INPUT_OUT_LOG: ${{ inputs.out_log }}
       run: |
-        #======================================= Define common functions =======================================
-        #
-        # Error output formatting
-        ERROR="[\033[91m ERROR \033[0m]"
-        error_msg() {
-            echo -e "${ERROR} ${1}"
-            exit 1
-        }
-        #
-        # Validate boolean parameter
-        validate_boolean() {
-            local var="${1}" param_name="${2}"
-            if [[ ! "${var}" =~ ^(true|false)$ ]]; then
-                error_msg "Invalid value for ${param_name}: '${var}' must be 'true' or 'false'."
-            fi
-        }
-        #
-        # Validate make_latest parameter
-        validate_latest() {
-            local var="${1}" param_name="${2}"
-            if [[ ! "${var}" =~ ^(true|false|legacy)$ ]]; then
-                error_msg "Invalid value for ${param_name}: '${var}' must be 'true', 'false', or 'legacy'."
-            fi
-        }
-        #
-        # Validate upload_timeout parameter (must be a non-negative integer)
-        validate_timeout() {
-            local var="${1}"
-            if [[ ! "${var}" =~ ^[0-9]+$ ]]; then
-                error_msg "Invalid value for upload_timeout: '${var}' — must be a non-negative integer (minutes)."
-            fi
-        }
-        #
-        #====================================== Validate input parameters ======================================
-        #
         # Print the action path and workflow run ID for diagnostics
         echo -e "Action path: ${{ github.action_path }}"
         echo -e "Workflow Run ID: ${GITHUB_RUN_ID}"
-        #
-        # Validate required inputs
-        [[ -z "${GH_TOKEN}" ]]        && error_msg "The 'gh_token' input is required."
-        [[ -z "${INPUT_TAG}" ]]       && error_msg "The 'tag' input is required."
-        [[ -z "${INPUT_ARTIFACTS}" ]] && error_msg "The 'artifacts' input is required."
-        #
-        # Validate optional boolean / enum inputs
-        [[ -n "${INPUT_ALLOW_UPDATES}" ]]       && validate_boolean  "${INPUT_ALLOW_UPDATES}"       "allow_updates"
-        [[ -n "${INPUT_REMOVE_ARTIFACTS}" ]]    && validate_boolean  "${INPUT_REMOVE_ARTIFACTS}"    "remove_artifacts"
-        [[ -n "${INPUT_REPLACES_ARTIFACTS}" ]]  && validate_boolean  "${INPUT_REPLACES_ARTIFACTS}"  "replaces_artifacts"
-        [[ -n "${INPUT_MAKE_LATEST}" ]]         && validate_latest   "${INPUT_MAKE_LATEST}"         "make_latest"
-        [[ -n "${INPUT_PRERELEASE}" ]]          && validate_boolean  "${INPUT_PRERELEASE}"          "prerelease"
-        [[ -n "${INPUT_DRAFT}" ]]               && validate_boolean  "${INPUT_DRAFT}"               "draft"
-        [[ -n "${INPUT_OUT_LOG}" ]]             && validate_boolean  "${INPUT_OUT_LOG}"             "out_log"
-        [[ -n "${INPUT_UPLOAD_TIMEOUT}" ]]      && validate_timeout  "${INPUT_UPLOAD_TIMEOUT}"
-        #
-        #===================================== Invoke the upload script ========================================
-        #
-        # Invoke upload.sh using its absolute path to ensure the script is found regardless
-        # of the current working directory. The runner sets the working directory to
-        # GITHUB_WORKSPACE by default, so relative artifact paths resolve correctly.
-        # All parameters are already available as INPUT_* env vars — no CLI args needed.
+
+        # Use an absolute path to ensure the script can be found
         chmod +x "${{ github.action_path }}/upload.sh"
         bash "${{ github.action_path }}/upload.sh"
-        #
-        #=========================================== End of script =============================================
 
 branding:
   icon: "upload-cloud"
