@@ -1096,7 +1096,9 @@ upload_all_assets() {
     # start with an empty results file
     >"${UPLOAD_RESULTS_FILE}"
 
-    local up_success=0 up_fail=0 up_skip=0
+    UP_SUCCESS=0
+    UP_FAIL=0
+    UP_SKIP=0
     local idx=0
     local skipped_files=()
 
@@ -1107,19 +1109,19 @@ upload_all_assets() {
         upload_asset "${file_path}" "${idx}" "${total}"
         local upload_ret="${?}"
         if [[ "${upload_ret}" -eq 0 ]]; then
-            up_success=$((up_success + 1))
+            UP_SUCCESS=$((UP_SUCCESS + 1))
         elif [[ "${upload_ret}" -eq 2 ]]; then
-            up_skip=$((up_skip + 1))
+            UP_SKIP=$((UP_SKIP + 1))
             skipped_files+=("${file_path}")
         else
-            up_fail=$((up_fail + 1))
+            UP_FAIL=$((UP_FAIL + 1))
         fi
     done
 
-    echo -e "${SUCCESS} Upload summary: [ ${total} ] total, [ ${up_success} ] succeeded, [ ${up_fail} ] failed, [ ${up_skip} ] skipped."
+    echo -e "${SUCCESS} Upload summary: [ ${total} ] total, [ ${UP_SUCCESS} ] succeeded, [ ${UP_FAIL} ] failed, [ ${UP_SKIP} ] skipped."
 
     # List failed files (not in UPLOAD_RESULTS_FILE and not in skipped_files)
-    if [[ "${up_fail}" -gt 0 ]]; then
+    if [[ "${UP_FAIL}" -gt 0 ]]; then
         echo -e "${NOTE} Files failed to upload:"
         for file_path in "${resolved_files[@]}"; do
             local fname
@@ -1137,7 +1139,7 @@ upload_all_assets() {
     fi
 
     # List skipped files separately
-    if [[ "${up_skip}" -gt 0 ]]; then
+    if [[ "${UP_SKIP}" -gt 0 ]]; then
         local skip_total="${#skipped_files[@]}"
         local skip_idx=0
         local max_sfname_len=0
@@ -1162,7 +1164,7 @@ upload_all_assets() {
     echo -e ""
 
     # Abort with a non-zero exit only if every single file actually failed (skipped = SHA-256 identical = success)
-    [[ "${up_success}" -eq 0 && "${up_skip}" -eq 0 ]] && error_msg "All [ ${total} ] file(s) failed to upload. Aborting."
+    [[ "${UP_SUCCESS}" -eq 0 && "${UP_SKIP}" -eq 0 ]] && error_msg "All [ ${total} ] file(s) failed to upload. Aborting."
 }
 
 # For each successfully uploaded file, computes the local SHA-256 checksum and
@@ -1177,11 +1179,14 @@ upload_all_assets() {
 # Results are printed in a numbered table and a final pass/fail summary is shown.
 # Verification failures are non-fatal — the overall script still exits 0
 # unless every single upload failed.
+#
+# If no new files are uploaded (all files were skipped or failed),
+# print a short summary showing the failed and skipped counts.
 verify_uploads() {
     echo -e "${STEPS} Verifying upload integrity (SHA-256)..."
 
     if [[ ! -s "${UPLOAD_RESULTS_FILE}" ]]; then
-        echo -e "${NOTE} No successfully uploaded files to verify."
+        echo -e "${NOTE} No newly uploaded files to verify. [ ${UP_FAIL} ] failed, [ ${UP_SKIP} ] skipped."
         echo -e ""
         return
     fi
