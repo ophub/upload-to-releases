@@ -408,6 +408,7 @@ init_var() {
     echo -e "${INFO} allow_updates:      [ ${allow_updates} ]"
     echo -e "${INFO} remove_artifacts:   [ ${remove_artifacts} ]"
     echo -e "${INFO} replaces_artifacts: [ ${replaces_artifacts} ]"
+    echo -e "${INFO} retry_max_attempts: [ ${RETRY_MAX_ATTEMPTS} ]"
     echo -e "${INFO} upload_timeout:     [ ${timeout_display} ]"
     echo -e "${INFO} make_latest:        [ ${make_latest} ]"
     echo -e "${INFO} prerelease:         [ ${prerelease} ]"
