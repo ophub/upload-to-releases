@@ -79,9 +79,9 @@ UPLOAD_SPEED_LIMIT="1024"
 UPLOAD_SPEED_TIME="60"
 
 # Maximum upload attempts per file (initial try + retries)
-RETRY_MAX_ATTEMPTS="3"
-# Initial back-off between upload retries (seconds); doubled on each subsequent attempt
-RETRY_WAIT_INIT="30"
+RETRY_MAX_ATTEMPTS="5"
+# Wait time between upload retries (seconds); fixed interval for each attempt
+RETRY_WAIT_INIT="10"
 # Seconds to wait after receiving HTTP 429 (rate-limited) before the next attempt
 RATE_LIMIT_WAIT="60"
 
@@ -181,8 +181,8 @@ sanitize_log() {
 #
 # Retry policy:
 #   • 401 / 403 / 404  → fail immediately (non-retryable auth / not-found errors)
-#   • 429              → wait RATE_LIMIT_WAIT seconds then retry (up to 3 times)
-#   • any other non-2xx → exponential back-off, up to 3 attempts
+#   • 429              → wait RATE_LIMIT_WAIT seconds then retry (up to RETRY_MAX_ATTEMPTS attempts)
+#   • any other non-2xx → fixed-interval retry, up to RETRY_MAX_ATTEMPTS attempts
 api_call() {
     # nameref parameters — write results directly into the caller's variables
     local -n ref_body="${1}"
@@ -199,7 +199,7 @@ api_call() {
 
     # counters and timers for retry logic
     local attempt=0 max_attempts="${RETRY_MAX_ATTEMPTS}"
-    # back-off starts at RETRY_WAIT_INIT, doubles each round
+    # wait_time is fixed at RETRY_WAIT_INIT for every retry round
     local wait_time="${RETRY_WAIT_INIT}"
     # temp file to capture the response body separately from the status code
     local tmp_body
@@ -237,8 +237,6 @@ api_call() {
             if [[ "${attempt}" -lt "${max_attempts}" ]]; then
                 echo -e "${NOTE} (api_call) Retrying in ${wait_time}s..."
                 sleep "${wait_time}"
-                # exponential back-off for transport-level errors (not HTTP status codes)
-                wait_time=$((wait_time * 2))
                 continue
             fi
             # Final failure: commit last-attempt values so caller can inspect them
@@ -277,7 +275,6 @@ api_call() {
         if [[ "${attempt}" -lt "${max_attempts}" ]]; then
             echo -e "${NOTE} (api_call) Retrying in ${wait_time}s..."
             sleep "${wait_time}"
-            wait_time=$((wait_time * 2))
         fi
     done
 
@@ -772,7 +769,7 @@ delete_asset() {
     local resp code
 
     # Loop through each attempt: on 200/204 return success, on 404 treat as already deleted,
-    # on 429 wait and retry, on other errors apply exponential back-off and retry
+    # on 429 wait and retry, on other errors wait RETRY_WAIT_INIT seconds and retry
     while [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; do
         attempt=$((attempt + 1))
 
@@ -791,8 +788,8 @@ delete_asset() {
             sleep "${RATE_LIMIT_WAIT}"
         else
             echo -e "${NOTE} │  ${idx_prefix} Failed to delete [ ${safe_asset_name} ] (HTTP ${code}), attempt ${attempt}/${RETRY_MAX_ATTEMPTS}"
-            # Apply exponential back-off before the next attempt
-            [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]] && sleep "${wait_time}" && wait_time=$((wait_time * 2))
+            # Wait before the next attempt
+            [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]] && sleep "${wait_time}"
         fi
     done
 
@@ -955,7 +952,6 @@ upload_asset() {
                 cleanup_partial_upload "${file_name}" "${file_index}" "${total_files}"
                 echo -e "${NOTE} │  (${file_index}/${total_files}) Retrying in ${wait_time}s..."
                 sleep "${wait_time}"
-                wait_time=$((wait_time * 2))
                 continue
             fi
             # Print the captured curl stderr on the final attempt to expose the root cause
@@ -1049,12 +1045,11 @@ upload_asset() {
         api_error="$(echo "${response}" | jq -r '.message // "Unknown error"' 2>/dev/null)"
         echo -e "${NOTE} │  (${file_index}/${total_files}) HTTP ${http_code}: ${api_error} (attempt ${attempt}/${RETRY_MAX_ATTEMPTS})"
 
-        # Apply exponential back-off before the next attempt, but only if we have attempts left
+        # Wait before the next attempt, but only if we have attempts left
         if [[ "${attempt}" -lt "${RETRY_MAX_ATTEMPTS}" ]]; then
             cleanup_partial_upload "${file_name}" "${file_index}" "${total_files}"
             echo -e "${NOTE} │  (${file_index}/${total_files}) Retrying in ${wait_time}s..."
             sleep "${wait_time}"
-            wait_time=$((wait_time * 2))
         fi
     done
 

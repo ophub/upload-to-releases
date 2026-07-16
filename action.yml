@@ -25,7 +25,7 @@ inputs:
     required: false
     default: "true"
   upload_timeout:
-    description: "Per-file upload timeout in minutes, 0 to disable (retries 3 times, stall guard active)"
+    description: "Per-file upload timeout in minutes, 0 to disable (retries 5 times, stall guard active)"
     required: false
     default: "5"
   make_latest:
